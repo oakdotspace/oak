@@ -1,87 +1,47 @@
-# Oak CLI
+# Oak
 
-`oak` is the command-line client for [Oak](https://oakvcs.com) — version
-control for you and your agents. It is a purpose-built VCS designed for
-agent workflows: branch-per-session, content-addressed storage,
-large-file support, and lazy mounts.
+**Version control for you and your agents.**
 
-This repository contains the **client** side of Oak: the `oak` binary and
-the local crates it builds on. The hosted server and web UI are not part
-of this repository.
+This repository is the open-source heart of [Oak](https://oakvcs.com): the
+reusable version-control library and the `oak` command-line client, developed
+together as a Cargo workspace.
 
-## Structure
+| Crate | Path | crates.io | What it is |
+|-------|------|-----------|------------|
+| `oakvcs-core` | [`core/`](core/) | [`oakvcs-core`](https://crates.io/crates/oakvcs-core) | The VCS foundation: BLAKE3 content hashing, content-defined chunking, diff/merge, the Blob/Manifest/Commit/Tree data model, and an optional client-side local repository (SQLite + git backends). |
+| `oakvcs-cli` | [`cli/`](cli/) | [`oakvcs-cli`](https://crates.io/crates/oakvcs-cli) | The `oak` binary that builds on `oak-core`. |
 
-This repository **is** the `oak-cli` package — the repo root is the crate
-that defines the `oak` binary. It has a single dependency of note:
+## Using the library in your own project
 
-| Crate                        | Description                                                                 |
-| ---------------------------- | --------------------------------------------------------------------------- |
-| `oak-cli` (this repo's root) | The `oak` command-line application (clap-based). Defines the `oak` binary.  |
-| [`oak-core`](https://crates.io/crates/oak-core) (external) | Core VCS logic **and** the client-side local repository: BLAKE3 hashing, content-defined chunking, diff/merge, the `Blob`/`Manifest`/`Commit`/`Tree` data model, and the `Repository` trait with its local SQLite + read-only git backends. Published on crates.io and shared with the Oak server. |
+`oak-core` is usable on its own — e.g. to build an Oak integration into another
+tool or engine. Pull in just the content-addressed data model and hashing
+(no SQLite/git) with default features off:
 
-`oak-core` is consumed from crates.io. The storage it provides is
-**client-only** — it depends on neither `sqlx` nor any server data model.
-Oak's server-side async/PostgreSQL storage lives in a separate, private tree.
-
-> **Building before `oak-core` is published:** the root `Cargo.toml` carries
-> a `[patch.crates-io]` entry pointing `oak-core` at a sibling `../oak-core`
-> checkout so the CLI builds locally today. Once `oak-core` is live on
-> crates.io, delete that patch section.
-
-## Installing
-
-Requires a Rust toolchain (see [`rust-toolchain.toml`](rust-toolchain.toml)).
-
-```bash
-cargo install --path .             # build and install the `oak` binary to ~/.cargo/bin
-make install                       # same, but with the `mount` feature on macOS/Linux
+```toml
+[dependencies]
+oak-core = { package = "oakvcs-core", version = "0.94.0", default-features = false }
 ```
 
-Or just build it without installing:
+Add the default `local-repo` feature when you also want the on-disk
+`Repository` (SQLite + read-only git) backends.
+
+## Installing the CLI
 
 ```bash
-cargo build --release              # release binary at target/release/oak
-cargo test                         # run the test suite
+cargo install oakvcs-cli   # installs the `oak` binary
 ```
 
-### Lazy mounts (`--features mount`)
-
-`oak mount` exposes a remote repository as a virtual filesystem, hydrating
-files on demand. It is **off by default** and enabled with the `mount`
-feature, which selects a platform-native backend at compile time:
+## Building from source
 
 ```bash
-cargo install --path . --features mount
+cargo build --workspace        # builds oak-core + the oak binary
+cargo test  -p oakvcs-cli      # CLI tests (incl. wiremock HTTP tests)
+make build                     # release build + the CLI release tooling
 ```
 
-- **macOS** — FUSE via [macFUSE](https://macfuse.github.io)
-  (`brew install pkgconf macfuse`) or fuse-t. Links `libfuse`, which is why
-  `mount` is never baked into the default distributed mac binary.
-- **Linux** — FUSE via the `fusermount3` helper from the `fuse3` package
-  (no `libfuse` link). Needs `/dev/fuse`.
-- **Windows** — [ProjFS](https://learn.microsoft.com/windows/win32/projfs/projected-file-system).
-  Enable the optional feature once per machine:
-  ```powershell
-  Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart
-  ```
-
-## Default server
-
-`oak` talks to [oakvcs.com](https://oakvcs.com) by default. Point it at a
-different server with `oak login -r <url>` or the `-r/--remote` flag on the
-sync commands.
-
-## Getting started
-
-```bash
-oak init                 # initialize a repository in the current directory
-oak commit               # record a snapshot
-oak push --repo <org>/<name>   # publish your branch to the server
-```
-
-Run `oak --help` for the full command list, or `oak <command> --help` for
-details on any command. Docs live at <https://oakvcs.com/docs>.
+The CLI depends on `oak-core` via an in-workspace path, so a plain
+`cargo build` works against the local `core/` checkout with no extra setup.
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE).

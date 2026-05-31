@@ -1,9 +1,9 @@
 # Oak CLI — build / install / release.
 #
-# This repo IS the `oak-cli` package (the repo root), producing the `oak`
-# binary. It depends on `oak-core`; until that crate is published, a
-# `[patch.crates-io]` in Cargo.toml resolves it to a sibling ../oak-core
-# checkout, so a sibling clone of oak-core must be present to build locally.
+# Run from the workspace root. This repo is a Cargo workspace with two members:
+# `core/` (oakvcs-core) and `cli/` (oakvcs-cli, which produces the `oak`
+# binary). The CLI depends on `oak-core` via an in-workspace path, so no
+# `[patch.crates-io]` is needed — a plain build resolves core from ./core.
 
 CARGO ?= $(shell if command -v cargo >/dev/null 2>&1; then command -v cargo; elif [ -x "$(HOME)/.cargo/bin/cargo" ]; then printf '%s\n' "$(HOME)/.cargo/bin/cargo"; else printf '%s\n' cargo; fi)
 
