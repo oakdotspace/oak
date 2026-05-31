@@ -4,6 +4,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 use dialoguer::Confirm;
+use minisign_verify::{PublicKey, Signature};
 use oak_core::{OakError, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -11,6 +12,33 @@ use sha2::{Digest, Sha256};
 use crate::output;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Minisign public key that release binaries are signed against. The matching
+/// secret key signs each binary at release time (`cli/Makefile`'s
+/// `MINISIGN_SECKEY`) and is held OFF the release server — so even a fully
+/// compromised release server cannot ship a binary that passes this check.
+/// This is the real authenticity check; the SHA-256 verification just above it
+/// only guards against corruption (the checksum comes from the same server as
+/// the binary).
+///
+/// TODO(release): replace this with YOUR production public key before cutting
+/// the first signed release. Generate a keypair once with `minisign -G` (keep
+/// the `.key` secret key safe and out of the repo) and paste the base64 line
+/// from the `.pub` file here. The value below is a throwaway dev key.
+const RELEASE_PUBKEY: &str = "RWTQfszCQoIlhp/XG+dV3JXg8Yibl4e8ANvI0CgF2Ftar2OCf0JUb83E";
+
+/// Verify a minisign `signature` over `data` against `pubkey_b64` (the bare
+/// base64 line from a minisign `.pub` file). Returns an error if the key or
+/// signature is malformed or the signature doesn't match.
+fn verify_release_signature(pubkey_b64: &str, signature: &str, data: &[u8]) -> Result<()> {
+    let public_key = PublicKey::from_base64(pubkey_b64)
+        .map_err(|e| OakError::Server(format!("Invalid release public key: {e}")))?;
+    let sig = Signature::decode(signature)
+        .map_err(|e| OakError::Server(format!("Malformed release signature: {e}")))?;
+    public_key
+        .verify(data, &sig, false)
+        .map_err(|e| OakError::Server(format!("Release signature verification failed: {e}")))
+}
 
 #[derive(Deserialize)]
 struct LatestResponse {
@@ -168,6 +196,36 @@ pub async fn run(remote: &str, force: bool) -> Result<()> {
 
     output::success("Checksum verified!");
 
+    // Verify the minisign signature over the downloaded binary. This is the
+    // authenticity check (the checksum above only catches corruption, since it
+    // comes from the same server). The signing key lives off the release
+    // server, so this is what stops a compromised server from shipping a forged
+    // binary. Fail closed: an unsigned release or a bad signature aborts.
+    output::info("Verifying signature...");
+    let sig_resp = client
+        .get(format!(
+            "{}/api/releases/{}/{}/minisig",
+            remote, latest.version, platform
+        ))
+        .send()
+        .await
+        .map_err(|e| OakError::Http(e.to_string()))?;
+
+    if !sig_resp.status().is_success() {
+        return Err(OakError::Server(format!(
+            "Release {} for {} has no signature on the server — refusing to upgrade.",
+            latest.version, platform
+        )));
+    }
+
+    let signature = sig_resp
+        .text()
+        .await
+        .map_err(|e| OakError::Http(e.to_string()))?;
+
+    verify_release_signature(RELEASE_PUBKEY, &signature, &binary_data)?;
+    output::success("Signature verified!");
+
     // Get current executable path
     let current_exe = env::current_exe().map_err(OakError::Io)?;
 
@@ -214,4 +272,43 @@ pub async fn run(remote: &str, force: bool) -> Result<()> {
     ));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A real minisign keypair + signature produced with `rsign` (minisign-
+    // compatible). Signed payload is exactly b"hello-oak-minisign\n". These
+    // pin down that verify_release_signature accepts a genuine signature and
+    // rejects tampered data — independent of the production RELEASE_PUBKEY.
+    const TEST_PUBKEY: &str = "RWTQfszCQoIlhp/XG+dV3JXg8Yibl4e8ANvI0CgF2Ftar2OCf0JUb83E";
+    const TEST_SIG: &str = "untrusted comment: signature from rsign secret key\n\
+RUTQfszCQoIlhpRZsuBtFg5Cb2qOeYcydBkDdO5YKHGf8/T6sKuZG4ttlPEKSRcAIm5SrqyG14fVF5gUBayZBlaJIJhFxH5hXwA=\n\
+trusted comment: timestamp:1780211915\tfile:testfile\tprehashed\n\
+jxJE7ZGdfjP6hE9SCW/HPmkcGivAlIeMIZLWuQIlhLko+CuS6at3uYq6HeFkYquKaZoZps2P1tjOBwE+ZIpBBg==\n";
+    const TEST_DATA: &[u8] = b"hello-oak-minisign\n";
+
+    #[test]
+    fn accepts_valid_signature() {
+        verify_release_signature(TEST_PUBKEY, TEST_SIG, TEST_DATA)
+            .expect("a genuine signature over the exact payload must verify");
+    }
+
+    #[test]
+    fn rejects_tampered_data() {
+        assert!(verify_release_signature(TEST_PUBKEY, TEST_SIG, b"tampered payload").is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_key() {
+        // Flip the key: a different (valid-format) pubkey must not verify.
+        let other = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
+        assert!(verify_release_signature(other, TEST_SIG, TEST_DATA).is_err());
+    }
+
+    #[test]
+    fn rejects_malformed_signature() {
+        assert!(verify_release_signature(TEST_PUBKEY, "not a signature", TEST_DATA).is_err());
+    }
 }
