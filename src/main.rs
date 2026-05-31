@@ -131,6 +131,26 @@ enum Commands {
         verbose: bool,
     },
 
+    /// Run a minimal self-hosted Oak server backed by SQLite.
+    ///
+    /// Serves the push/pull/clone protocol from a local data directory (one
+    /// SQLite file per repo) with no organizations and no auth model. Point a
+    /// CLI at it with `oak clone http://<host>:<port>/<owner>/<name>`.
+    Serve {
+        /// Directory to store repositories in (one `<owner>/<name>.oakdb` each)
+        #[arg(short, long, default_value = "./oak-data")]
+        dir: PathBuf,
+
+        /// Port to listen on
+        #[arg(short, long, default_value_t = 8080)]
+        port: u16,
+
+        /// Optional shared bearer token required on every request. When unset,
+        /// the server is open (intended for localhost / trusted networks).
+        #[arg(long, env = "OAK_SERVE_TOKEN")]
+        token: Option<String>,
+    },
+
     /// Push commits to remote server
     Push {
         /// Remote server URL
@@ -840,6 +860,15 @@ fn main() {
             } else {
                 commands::log::run(&cwd, limit, verbose)
             }
+        }
+
+        Commands::Serve { dir, port, token } => {
+            let target = if dir.is_absolute() {
+                dir
+            } else {
+                cwd.join(dir)
+            };
+            rt.block_on(commands::serve::run(target, port, token))
         }
 
         Commands::Push {

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use dialoguer::{Confirm, Input, Select};
 use oak_core::{chunk_content, Hash, MetadataKey, OakError, Result, LARGE_FILE_THRESHOLD};
 use oak_core::{Repository, SqliteRepository};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
@@ -13,98 +13,20 @@ use crate::output;
 /// Maximum number of concurrent chunk uploads.
 const MAX_CONCURRENT_TRANSFERS: usize = 8;
 
-/// Push request data
-#[derive(Serialize)]
-struct PushRequest {
-    expected_head: Option<String>,
-    /// The local branch head we expect the server to currently be at, for
-    /// per-branch conflict detection. Without this, two clients pushing
-    /// divergent commits to the same feature branch both succeed (the
-    /// global repo head doesn't move on non-root branch pushes, so the
-    /// legacy `expected_head` check incorrectly passes both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    expected_branch_head: Option<String>,
-    #[serde(default)]
-    force: bool,
-    branch: Option<BranchData>,
-    commits: Vec<CommitData>,
-    blobs: Vec<BlobData>,
-    /// Tree objects reachable from each commit's root tree.
-    trees: Vec<TreeData>,
-}
+// Wire protocol types live in `oak_core::protocol` (the single source of truth
+// shared by the CLI, the hosted server, and `oak serve`). They're aliased back
+// to the names this module has always used so the call sites below are
+// unchanged. `BranchPushData`'s wire shape is identical to the old local
+// `BranchData`, and `ChunkCheckServerResponse` to the old `ChunkCheckResponse`.
+use oak_core::protocol::{
+    BlobCheckResponse, BlobData, BranchPushData as BranchData,
+    ChunkCheckServerResponse as ChunkCheckResponse, ChunkRefData as ChunkRef, CommitData,
+    FileChangeData, PushRequest, PushResponse, TreeData, TreeEntryData,
+};
 
-#[derive(Serialize)]
-struct BranchData {
-    name: String,
-    description: Option<String>,
-    parent_branch: Option<String>,
-    status: String,
-    created_at: String,
-}
-
-#[derive(Serialize)]
-struct CommitData {
-    hash: String,
-    branch_name: String,
-    parent_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    merge_parent_hash: Option<String>,
-    manifest_hash: String,
-    author: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-    timestamp: String,
-    files: Vec<FileChangeData>,
-}
-
-#[derive(Serialize)]
-struct FileChangeData {
-    path: String,
-    change_type: String,
-    old_blob_hash: Option<String>,
-    new_blob_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    old_path: Option<String>,
-}
-
-#[derive(Serialize, Clone)]
-struct ChunkRef {
-    hash: String,
-    offset: u64,
-    size: u32,
-}
-
-#[derive(Serialize)]
-struct BlobData {
-    hash: String,
-    content: Vec<u8>,
-    size: u64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    chunks: Vec<ChunkRef>,
-}
-
-#[derive(Serialize)]
-struct TreeData {
-    hash: String,
-    entries: Vec<TreeEntryData>,
-}
-
-#[derive(Serialize)]
-struct TreeEntryData {
-    name: String,
-    kind: String,
-    hash: String,
-    mode: String,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct PushResponse {
-    success: bool,
-    new_head: Option<String>,
-    message: String,
-}
-
+/// Minimal client-side view of `GET /api/{owner}/{name}` — the push flow only
+/// needs the repo head, so it deserializes leniently rather than pulling in the
+/// full `protocol::RepoResponse`.
 #[derive(Deserialize)]
 struct RepoResponse {
     head: Option<String>,
@@ -115,27 +37,6 @@ struct RepoResponse {
 #[derive(Deserialize)]
 struct BranchHeadResponse {
     head: Option<String>,
-}
-
-/// Info about a missing chunk with optional presigned upload URL
-#[derive(Deserialize)]
-struct ChunkUploadInfo {
-    hash: String,
-    upload_url: Option<String>,
-}
-
-/// Response from the chunk check endpoint
-#[derive(Deserialize)]
-struct ChunkCheckResponse {
-    missing: Vec<ChunkUploadInfo>,
-}
-
-/// Response from `POST /api/{owner}/{name}/blobs/check`. `missing` is the
-/// subset of the requested hashes the server doesn't have — i.e. the
-/// blobs the client should actually upload.
-#[derive(Deserialize)]
-struct BlobCheckResponse {
-    missing: Vec<String>,
 }
 
 /// Helper to add auth header to a request builder

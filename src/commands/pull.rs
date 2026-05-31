@@ -4,10 +4,9 @@ use std::sync::Arc;
 
 use oak_core::{
     reassemble_chunks, Blob, Branch, BranchStatus, ChangeType, ChunkInfo, Commit, FileChange,
-    FileMode, Hash, MetadataKey, OakError, Result,
+    Hash, MetadataKey, OakError, Result,
 };
 use oak_core::{Repository, SqliteRepository};
-use serde::Deserialize;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
@@ -23,135 +22,18 @@ const MAX_CONCURRENT_TRANSFERS: usize = 8;
 /// reintroduce a per-object fsync.
 const BULK_FLUSH_BYTES: u64 = 64 * 1024 * 1024;
 
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct PullResponse {
-    head: Option<String>,
-    branch: Option<BranchData>,
-    #[serde(default)]
-    branches: Vec<BranchData>,
-    commits: Vec<CommitData>,
-    blobs: Vec<BlobData>,
-    #[serde(default)]
-    trees: Vec<TreeData>,
-    #[serde(default)]
-    renames: Vec<RenameData>,
-}
-
-#[derive(Deserialize)]
-struct RenameData {
-    id: i64,
-    old_name: String,
-    new_name: String,
-    #[allow(dead_code)]
-    renamed_at: String,
-}
-
-#[derive(Deserialize)]
-struct BranchData {
-    name: String,
-    description: Option<String>,
-    parent_branch: Option<String>,
-    status: String,
-    created_at: String,
-}
-
-#[derive(Deserialize)]
-struct CommitData {
-    hash: String,
-    branch_name: String,
-    parent_hash: Option<String>,
-    #[serde(default)]
-    merge_parent_hash: Option<String>,
-    manifest_hash: String,
-    author: String,
-    #[serde(default)]
-    message: Option<String>,
-    timestamp: String,
-    files: Vec<FileChangeData>,
-}
-
-#[derive(Deserialize)]
-struct FileChangeData {
-    path: String,
-    change_type: String,
-    old_blob_hash: Option<String>,
-    new_blob_hash: Option<String>,
-    #[serde(default)]
-    old_path: Option<String>,
-}
-
-#[derive(Deserialize, Clone)]
-pub struct ChunkRef {
-    pub hash: String,
-    pub offset: u64,
-    pub size: u32,
-}
-
-#[derive(Deserialize)]
-pub struct BlobData {
-    pub hash: String,
-    pub size: u64,
-    #[serde(default)]
-    pub chunks: Vec<ChunkRef>,
-}
-
-#[derive(Deserialize)]
-struct TreeData {
-    hash: String,
-    entries: Vec<TreeEntryData>,
-}
-
-#[derive(Deserialize)]
-struct TreeEntryData {
-    name: String,
-    kind: String,
-    hash: String,
-    mode: String,
-}
+// Wire protocol types come from `oak_core::protocol` (the single source of
+// truth shared with the hosted server and `oak serve`), aliased to the names
+// this module has always used. `BlobData` is re-exported because `repo.rs`'s
+// clone path imports it via `super::pull::BlobData` and shares
+// `fetch_and_store_blobs`.
+use oak_core::protocol::{
+    BranchPullData as BranchData, ChunkDownloadResponse, PullResponse, TreeData,
+};
+pub use oak_core::protocol::BlobData;
 
 fn wire_to_core_tree(td: &TreeData) -> oak_core::Result<oak_core::Tree> {
-    let mut entries = Vec::with_capacity(td.entries.len());
-    for e in &td.entries {
-        let kind = match e.kind.as_str() {
-            "tree" => oak_core::TreeEntryKind::Tree,
-            "blob" => oak_core::TreeEntryKind::Blob,
-            other => {
-                return Err(OakError::Database(format!(
-                    "invalid tree entry kind: {other}"
-                )))
-            }
-        };
-        let mode = match e.mode.as_str() {
-            "executable" => FileMode::Executable,
-            "symlink" => FileMode::Symlink,
-            _ => FileMode::Regular,
-        };
-        entries.push(oak_core::TreeEntry {
-            name: e.name.clone(),
-            kind,
-            hash: Hash(e.hash.clone()),
-            mode,
-        });
-    }
-    Ok(oak_core::Tree {
-        hash: Hash(td.hash.clone()),
-        entries,
-    })
-}
-
-/// Info about a chunk download (presigned URL or inline content)
-#[derive(Deserialize)]
-struct ChunkDownloadInfo {
-    hash: String,
-    download_url: Option<String>,
-    content: Option<Vec<u8>>,
-}
-
-/// Response from the chunks/download endpoint
-#[derive(Deserialize)]
-struct ChunkDownloadResponse {
-    chunks: Vec<ChunkDownloadInfo>,
+    oak_core::protocol::tree_data_to_core(td).map_err(OakError::Database)
 }
 
 /// Helper to add auth header to a request builder

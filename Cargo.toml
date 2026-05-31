@@ -128,6 +128,13 @@ wiremock = "0.6"
 members = []
 resolver = "2"
 
+# Resolve `oakvcs-core` to the sibling checkout for local development so
+# unpublished changes (e.g. the `oak_core::protocol` wire types `oak serve`
+# depends on) are picked up without a crates.io release. Drop this patch once a
+# version carrying those changes is published.
+[patch.crates-io]
+oakvcs-core = { path = "../core" }
+
 [workspace.package]
 version = "0.94.0"
 edition = "2021"

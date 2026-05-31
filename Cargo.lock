@@ -3033,8 +3033,6 @@ dependencies = [
 [[package]]
 name = "oakvcs-core"
 version = "0.94.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6ea379788a88887302f2bf2b44f7dc8485daf88ece4081035822e44ee500023"
 dependencies = [
  "blake3",
  "chrono",

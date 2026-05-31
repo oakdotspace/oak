@@ -169,6 +169,7 @@ pub mod release;
 pub mod repo;
 pub mod reset;
 pub mod restore;
+pub mod serve;
 pub mod site;
 pub mod spaces;
 pub mod status;
