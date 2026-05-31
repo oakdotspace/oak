@@ -1,15 +1,27 @@
+# Published to crates.io as `oakvcs-cli` (installs the `oak` binary via
+# `cargo install oakvcs-cli`). The `oak-cli` name pattern is kept internal.
 [package]
-name = "oak-cli"
+name = "oakvcs-cli"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "CLI application for Oak"
-publish = false
+description = "The Oak CLI (`oak`) — version control for you and your agents."
+homepage = "https://oakvcs.com"
+repository = "https://oakvcs.com/oak/cli"
+readme = "README.md"
+keywords = ["vcs", "version-control", "cli", "git"]
+categories = ["development-tools", "command-line-utilities"]
 
 [[bin]]
 name = "oak"
 path = "src/main.rs"
+
+# Keep the library crate importable as `oak_cli` (main.rs and the integration
+# tests do `use oak_cli::...`) even though the package is named `oakvcs-cli`.
+[lib]
+name = "oak_cli"
+path = "src/lib.rs"
 
 [dependencies]
 # oak-core is published on crates.io as `oakvcs-core`, imported as `oak_core`.

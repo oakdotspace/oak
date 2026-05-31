@@ -2992,7 +2992,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "oak-cli"
+name = "oakvcs-cli"
 version = "0.94.0"
 dependencies = [
  "axum",
