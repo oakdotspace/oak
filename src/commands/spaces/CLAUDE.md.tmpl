@@ -1,0 +1,114 @@
+# Oak space — {{spec}}
+
+This directory is an **Oak space** for the `{{spec}}` repository. Each
+subdirectory is a separate `oak mount` of `{{spec}}` — a lazy,
+FUSE-backed view with its own virtual branch. One subdirectory = one
+concurrent task on `{{spec}}`.
+
+This file ships with `oak mount {{spec}}` and is meant to be
+read by the coding agent (Claude Code, Cursor, etc.) opened here.
+
+## Starting a new task
+
+When the user asks you to start work on a new task:
+
+1. **Pick a slug.** 2–4 word kebab-case identifier
+   (e.g. `fix-auth-redirect`, `add-search-index`). Confirm with the
+   user if ambiguous.
+
+2. **Start a background mount.** `oak mount start` blocks the
+   foreground (it runs the FUSE event loop until Ctrl-C), so launch
+   it with `run_in_background: true`:
+   ```
+   oak mount start {{spec}} ./<slug>
+   ```
+   This creates a new virtual branch named `<slug>--<id8>` off
+   `{{spec}}`'s default branch. The mount is usable as soon as the
+   command prints `Mounting ... Press Ctrl-C to unmount.` You don't
+   need the virtual branch name for anything — mount-aware commands
+   (`oak status`, `oak commit`, etc., run from inside the mount) pick
+   it up automatically.
+
+3. **Read the repo's own CLAUDE.md.** Claude Code walks up from cwd
+   to find `CLAUDE.md`, but cwd stays at the space root — so
+   `{{spec}}`'s CLAUDE.md won't auto-load. Read `./<slug>/CLAUDE.md`
+   explicitly if it exists.
+
+## Working on a task
+
+- All edits go under `./<slug>/`. Never write to the space root or
+  to a sibling task's directory.
+- `oak status`, `oak diff`, `oak log`, `oak commit`, `oak push` all
+  work when run from inside the mount (`cd ./<slug> && oak status`).
+  They route through the mount and operate on the virtual branch.
+- **`oak commit` takes no message.** It accepts no `-m` flag — branch
+  descriptions are the source of truth for "what happened," not
+  per-commit messages. Just `oak commit`.
+- The overlay (uncommitted changes) is the **active commit**. Run
+  `oak commit` inside the mount to finalize a commit; the next edit
+  starts a new active commit on top.
+- **Subagent worktree isolation works here.** This space's
+  `.claude/settings.json` wires Claude Code's `WorktreeCreate` /
+  `WorktreeRemove` hooks to `oak mount`, so the Agent tool with
+  `isolation: "worktree"` (and `claude --worktree <name>`) gets its own
+  `oak mount` of `{{spec}}` on a fresh virtual branch instead of a git
+  worktree, and `oak mount end` tears it down on cleanup. Those
+  worktree mounts land under `.claude/worktrees/<name>/` rather than a
+  task `./<slug>/` dir, but they're ordinary mounts — `oak status`,
+  `oak commit`, `oak push` work inside them the same way. (Each is a
+  whole-repo mount; the hooks don't apply `--team` / `--project`
+  scope.)
+
+## Finishing a task
+
+When the user says the task is done:
+
+1. `cd ./<slug> && oak commit` — finalize any pending overlay.
+2. `cd ./<slug> && oak push` — send the virtual branch to the server.
+3. `cd ./<slug> && oak desc "<summary>"` — set the squash-merge message
+   on the now-pushed branch. (This pushes a metadata-only update.)
+4. Report the branch name and push result back to the user.
+5. **Only after the user confirms they're done** with the task:
+   ```
+   oak mount end ./<slug>
+   ```
+   This unmounts the FUSE mount, forgets the local cache, and removes
+   `./<slug>` in one step.
+
+To abandon without pushing: skip steps 2–3 and run
+`oak mount end --force ./<slug>` — `--force` discards any uncommitted
+overlay.
+
+## Knowing what's in flight
+
+`oak mount status` summarizes every active mount under this
+directory and flags any with uncommitted overlay. Run it when you're
+unsure what tasks exist or before ending a session.
+
+`oak mount list` shows the same plus virtual branch names for every
+mount on the machine (not just this space).
+
+## Branch descriptions
+
+`oak desc "<summary>"` works inside a mount: it writes the description
+onto the virtual branch in the mount cache db and then sends a
+metadata-only push so the server picks it up immediately. The branch
+description becomes the squash-merge commit message when the branch is
+merged into `main`, so it's worth writing a real summary rather than
+relying on the slug fallback.
+
+Recommended flow when finishing a task:
+
+```
+cd ./<slug>
+oak commit            # finalize pending overlay
+oak push              # send commits + current description
+oak desc "<summary>"  # update description (also pushes the change)
+```
+
+`oak desc` after `oak push` re-sends a no-commits "branch metadata
+only" push. If the description-sync fails (offline, auth expired) the
+description is still saved locally and the next `oak push` will carry
+it. By default — if you don't set a description — the squash-merge
+message defaults to the branch name, so a descriptive slug already
+carries most of the weight.

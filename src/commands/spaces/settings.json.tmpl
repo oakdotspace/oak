@@ -1,0 +1,52 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(oak mount:*)",
+      "Bash(oak status:*)",
+      "Bash(oak diff:*)",
+      "Bash(oak log:*)",
+      "Bash(oak hash:*)",
+      "Bash(oak commit:*)",
+      "Bash(oak push:*)",
+      "Bash(oak pull:*)",
+      "Bash(oak switch:*)",
+      "Bash(oak close:*)",
+      "Bash(oak desc:*)",
+      "Bash(oak tag list:*)",
+      "Bash(cd:*)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "oak mount status --quiet"
+          }
+        ]
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "oak mount worktree-create {{spec}}"
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "oak mount worktree-remove"
+          }
+        ]
+      }
+    ]
+  }
+}

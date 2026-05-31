@@ -1,0 +1,172 @@
+[package]
+name = "oak-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI application for Oak"
+publish = false
+
+[[bin]]
+name = "oak"
+path = "src/main.rs"
+
+[dependencies]
+# oak-core is published on crates.io as `oakvcs-core`, imported as `oak_core`.
+# Until it's published, the `[patch.crates-io]` at the bottom of this file
+# resolves it to the sibling ../oak-core checkout so local builds work; drop
+# that patch once published. oak-core also carries the client storage layer
+# (the former oak-storage): Repository, SqliteRepository, GitRepository,
+# BulkImporter, StatCacheEntry.
+oak-core = { package = "oakvcs-core", version = "0.94.0" }
+# `color` (on top of the workspace's derive+env) lets clap colorize its
+# auto-generated `oak <cmd> --help`, matching the hand-rolled `oak --help`
+# banner. oak-cli is the only crate that depends on clap, so this stays
+# scoped here and doesn't pull anstream into the server/web builds.
+clap = { workspace = true, features = ["color"] }
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+axum.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dialoguer = { version = "0.12", features = ["fuzzy-select"] }
+sha2 = "0.11"
+hex = "0.4"
+# Line-level 3-way merge. Used by `oak merge` and `oak pull`'s parent-sync
+# phase to produce git-style conflict markers around just the diverging
+# hunks rather than wrapping the entire file.
+diffy = "0.4"
+urlencoding = "2"
+zip.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+indicatif.workspace = true
+open = "5"
+dirs = "6"
+tempfile.workspace = true
+uuid = { workspace = true }
+toml = { workspace = true }
+rayon = { workspace = true }
+libc = "0.2"
+
+# Used by `oak clone <git-url>` to walk the cloned git history and replay it
+# as oak commits. Same feature flags as oak-storage so we share the build.
+gix = { workspace = true, features = ["max-performance-safe"] }
+
+# Virtual filesystem for `oak mount`. Off by default; build with
+# `--features mount`.
+#
+# Three backends, picked at compile time per target:
+#   - macOS   → fuser WITH the default `libfuse` feature. macOS has no
+#               fusermount helper, so mounting must go through libfuse
+#               (macFUSE: `brew install pkgconf macfuse`, or fuse-t). This
+#               links libfuse.2.dylib as a hard load-time dependency, which
+#               is why `--features mount` is never baked into the default
+#               distributed mac binary — only explicit local/dev builds.
+#   - Linux   → fuser WITHOUT libfuse (default-features = false). fuser then
+#               mounts by exec'ing the `fusermount3` setuid helper at runtime
+#               (from the `fuse3` package) instead of linking libfuse. Two
+#               payoffs: (1) the linux-x86_64 binary cross-compiles from
+#               macOS via cargo-zigbuild with no Linux libfuse to link
+#               against, and (2) no hard libfuse .so dependency on the
+#               shipped binary. Runtime needs `fuse3` installed + /dev/fuse.
+#   - Windows → windows crate's ProjFS bindings (needs the Windows
+#               "Projected File System" optional feature enabled — see README).
+[target.'cfg(target_os = "macos")'.dependencies]
+fuser = { version = "0.15", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { version = "0.15", optional = true, default-features = false }
+
+# Microsoft's Rust bindings for the Win32 ProjFS API. Pulled in only on
+# Windows; the `windows-core` types (PCWSTR, HRESULT, GUID) come along.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_Storage_ProjectedFileSystem",
+    "Win32_System_Com",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+] }
+windows-core = { version = "0.58", optional = true }
+
+[features]
+default = []
+# `mount` enables the platform-appropriate backend. Cargo's feature unifier
+# only activates the optional dep that matches the current target, so this
+# stays a single feature flag the user has to set.
+mount = ["dep:fuser", "dep:windows", "dep:windows-core"]
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# HTTP-level tests (blob_fetch, mount_remote) run the real reqwest client
+# against a wiremock server — no oak-server needed.
+wiremock = "0.6"
+
+[workspace]
+# Single-crate workspace: the root `oak-cli` package is the only member.
+# oak-core lives in its own repo and is consumed from crates.io.
+members = []
+resolver = "2"
+
+[workspace.package]
+version = "0.94.0"
+edition = "2021"
+authors = ["Oak Contributors"]
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# Core dependencies
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+futures-util = "0.3"
+
+# HTTP
+axum = { version = "0.8", features = ["multipart"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots", "stream", "charset", "http2", "form", "query", "multipart", "gzip"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# TUI
+ratatui = "0.30"
+crossterm = "0.29"
+
+# TOML config
+toml = "1.1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Archive
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
+# Data parallelism (parallel working-dir hashing in the CLI scan)
+rayon = "1.10"
+
+# Git interop (gitoxide)
+gix = { version = "0.81", default-features = false, features = ["sha1"] }
+
+# Progress bars
+indicatif = "0.18"
+
+# UUID generation
+uuid = { version = "1", features = ["v4"] }
+
+# Testing
+tempfile = "3.14"

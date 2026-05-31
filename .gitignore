@@ -1,0 +1,28 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Cargo.lock IS tracked — oak ships binary crates and reproducible builds
+# require a committed lockfile. Don't add Cargo.lock back here.
+
+# IDE
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Oak repository metadata
+.oak/
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
