@@ -30,7 +30,7 @@ path = "src/lib.rs"
 # directly, so no `[patch.crates-io]` is needed. oak-core also carries the
 # client storage layer (the former oak-storage): Repository, SqliteRepository,
 # GitRepository, BulkImporter, StatCacheEntry.
-oak-core = { package = "oakvcs-core", version = "0.94.0", path = "../core" }
+oak-core = { package = "oakvcs-core", version = "0.95.0", path = "../core" }
 # `color` (on top of the workspace's derive+env) lets clap colorize its
 # auto-generated `oak <cmd> --help`, matching the hand-rolled `oak --help`
 # banner. oak-cli is the only crate that depends on clap, so this stays

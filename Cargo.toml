@@ -13,7 +13,7 @@ members = ["core", "cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.94.0"
+version = "0.95.0"
 edition = "2021"
 authors = ["Oak Contributors"]
 license = "Apache-2.0"

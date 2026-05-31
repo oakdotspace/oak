@@ -4,7 +4,7 @@
 # and keep writing `use oak_core::...`.
 [package]
 name = "oakvcs-core"
-version = "0.94.0"
+version = "0.95.0"
 edition = "2021"
 authors = ["Oak Contributors"]
 license = "Apache-2.0"

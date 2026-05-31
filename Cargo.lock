@@ -2999,7 +2999,7 @@ dependencies = [
 
 [[package]]
 name = "oakvcs-cli"
-version = "0.94.0"
+version = "0.95.0"
 dependencies = [
  "axum",
  "chrono",
@@ -3039,7 +3039,7 @@ dependencies = [
 
 [[package]]
 name = "oakvcs-core"
-version = "0.94.0"
+version = "0.95.0"
 dependencies = [
  "blake3",
  "chrono",
