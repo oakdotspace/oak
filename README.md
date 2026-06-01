@@ -9,26 +9,40 @@ together as a Cargo workspace.
 | Crate | Path | crates.io | What it is |
 |-------|------|-----------|------------|
 | `oakvcs-core` | [`core/`](core/) | [`oakvcs-core`](https://crates.io/crates/oakvcs-core) | The VCS foundation: BLAKE3 content hashing, content-defined chunking, diff/merge, the Blob/Manifest/Commit/Tree data model, and an optional client-side local repository (SQLite + git backends). |
-| `oakvcs-cli` | [`cli/`](cli/) | [`oakvcs-cli`](https://crates.io/crates/oakvcs-cli) | The `oak` binary that builds on `oak-core`. |
+| `oakvcs-cli` | [`cli/`](cli/) | [`oakvcs-cli`](https://crates.io/crates/oakvcs-cli) | The `oak` binary that builds on `oakvcs-core`. |
 
 ## Using the library in your own project
 
-`oak-core` is usable on its own — e.g. to build an Oak integration into another
-tool or engine. Pull in just the content-addressed data model and hashing
-(no SQLite/git) with default features off:
+`oakvcs-core` is usable on its own — e.g. to build an Oak integration into
+another tool or engine. Pull in just the content-addressed data model and
+hashing (no SQLite/git) with default features off:
 
 ```toml
 [dependencies]
-oak-core = { package = "oakvcs-core", version = "0.94.0", default-features = false }
+oakvcs-core = { version = "0.95.0", default-features = false }
 ```
+
+The crate is published as `oakvcs-core` but imported as `oak_core`.
 
 Add the default `local-repo` feature when you also want the on-disk
 `Repository` (SQLite + read-only git) backends.
 
 ## Installing the CLI
 
+Oak is in **public beta** (v0.95.0). The quickest way in is the prebuilt
+`oak` binary:
+
 ```bash
-cargo install oakvcs-cli   # installs the `oak` binary
+curl -fsSL oakvcs.com/install | sh
+```
+
+The installer supports **macOS (Apple Silicon)** and **Linux (x86_64)**.
+After install, `oak upgrade` updates the binary in place.
+
+Prefer to build from crates.io? Install with Cargo instead:
+
+```bash
+cargo install oakvcs-cli   # builds and installs the `oak` binary
 ```
 
 ## Building from source

@@ -11,24 +11,30 @@ of this repository.
 
 ## Structure
 
-This repository **is** the `oak-cli` package — the repo root is the crate
+This repository **is** the `oakvcs-cli` package — the repo root is the crate
 that defines the `oak` binary. It has a single dependency of note:
 
 | Crate                        | Description                                                                 |
 | ---------------------------- | --------------------------------------------------------------------------- |
-| `oak-cli` (this repo's root) | The `oak` command-line application (clap-based). Defines the `oak` binary.  |
-| [`oak-core`](https://crates.io/crates/oak-core) (external) | Core VCS logic **and** the client-side local repository: BLAKE3 hashing, content-defined chunking, diff/merge, the `Blob`/`Manifest`/`Commit`/`Tree` data model, and the `Repository` trait with its local SQLite + read-only git backends. Published on crates.io and shared with the Oak server. |
+| `oakvcs-cli` (this repo's root) | The `oak` command-line application (clap-based). Defines the `oak` binary.  |
+| [`oakvcs-core`](https://crates.io/crates/oakvcs-core) (external) | Core VCS logic **and** the client-side local repository: BLAKE3 hashing, content-defined chunking, diff/merge, the `Blob`/`Manifest`/`Commit`/`Tree` data model, and the `Repository` trait with its local SQLite + read-only git backends. Published on crates.io (imported as `oak_core`) and shared with the Oak server. |
 
-`oak-core` is consumed from crates.io. The storage it provides is
+`oakvcs-core` is consumed from crates.io. The storage it provides is
 **client-only** — it depends on neither `sqlx` nor any server data model.
 Oak's server-side async/PostgreSQL storage lives in a separate, private tree.
 
-> **Building before `oak-core` is published:** the root `Cargo.toml` carries
-> a `[patch.crates-io]` entry pointing `oak-core` at a sibling `../oak-core`
-> checkout so the CLI builds locally today. Once `oak-core` is live on
-> crates.io, delete that patch section.
-
 ## Installing
+
+Oak is in **public beta** (v0.95.0). Install the prebuilt `oak` binary:
+
+```bash
+curl -fsSL oakvcs.com/install | sh
+```
+
+Supported platforms: **macOS (Apple Silicon)** and **Linux (x86_64)**. After
+install, run `oak upgrade` to update in place.
+
+### From source
 
 Requires a Rust toolchain (see [`rust-toolchain.toml`](rust-toolchain.toml)).
 
@@ -59,11 +65,6 @@ cargo install --path . --features mount
   `mount` is never baked into the default distributed mac binary.
 - **Linux** — FUSE via the `fusermount3` helper from the `fuse3` package
   (no `libfuse` link). Needs `/dev/fuse`.
-- **Windows** — [ProjFS](https://learn.microsoft.com/windows/win32/projfs/projected-file-system).
-  Enable the optional feature once per machine:
-  ```powershell
-  Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart
-  ```
 
 ## Default server
 

@@ -29,7 +29,7 @@ but the library is imported as `oak_core`:
 
 ```toml
 [dependencies]
-oakvcs-core = "0.94"
+oakvcs-core = "0.95"
 ```
 
 ```rust
@@ -41,7 +41,7 @@ SQLite/git layer:
 
 ```toml
 [dependencies]
-oakvcs-core = { version = "0.94", default-features = false }
+oakvcs-core = { version = "0.95", default-features = false }
 ```
 
 ## License
