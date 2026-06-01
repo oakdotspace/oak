@@ -1,6 +1,6 @@
 # Oak
 
-**Version control for you and your agents.**
+**Branch freely.**
 
 This repository is the open-source heart of [Oak](https://oakvcs.com): the
 reusable version-control library and the `oak` command-line client, developed
