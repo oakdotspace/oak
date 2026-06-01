@@ -35,11 +35,11 @@ use axum::{
 };
 
 use oak_core::protocol::{
-    tree_data_to_core, tree_to_wire, BlobCheckRequest, BlobCheckResponse, BlobData,
-    BranchPullData, ChunkCheckRequest, ChunkCheckServerResponse, ChunkDownloadInfo,
-    ChunkDownloadRequest, ChunkDownloadResponse, ChunkRefData, ChunkUploadInfo,
-    ChunkUploadedRequest, CommitData, CreateRepoRequest, ErrorResponse, FileChangeData, PullQuery,
-    PullResponse, PushRequest, PushResponse, RepoResponse,
+    tree_data_to_core, tree_to_wire, BlobCheckRequest, BlobCheckResponse, BlobData, BranchPullData,
+    ChunkCheckRequest, ChunkCheckServerResponse, ChunkDownloadInfo, ChunkDownloadRequest,
+    ChunkDownloadResponse, ChunkRefData, ChunkUploadInfo, ChunkUploadedRequest, CommitData,
+    CreateRepoRequest, ErrorResponse, FileChangeData, PullQuery, PullResponse, PushRequest,
+    PushResponse, RepoResponse,
 };
 use oak_core::{
     collect_tree_objects, reassemble_chunks, Blob, Branch, BranchStatus, ChangeType, ChunkInfo,
@@ -615,7 +615,10 @@ async fn pull(
         let branches: Vec<BranchPullData> = all_branches.iter().map(branch_to_pull).collect();
         let (branch, head) = match &target {
             Some(b) => {
-                let bp = all_branches.iter().find(|x| &x.name == b).map(branch_to_pull);
+                let bp = all_branches
+                    .iter()
+                    .find(|x| &x.name == b)
+                    .map(branch_to_pull);
                 (bp, repo.get_branch_head(b)?.map(|h| h.to_string()))
             }
             None => (None, None),

@@ -47,7 +47,7 @@ NOTARY_PROFILE ?= oak-notary
 # Release version, e.g. v0.94.0 — derived from the workspace package version.
 VERSION ?= v$(shell awk '/^\[workspace.package\]/{f=1} f&&/^version *=/{gsub(/[" ]/,"");split($$0,a,"=");print a[2];exit}' Cargo.toml)
 
-.PHONY: build install test fmt lint check \
+.PHONY: build install test fmt lint check ci \
         build-release-all build-release-linux-mount sign-release notarize-mac \
         upload-release release-all
 
@@ -62,11 +62,11 @@ build:
 # `oak mount` subcommand on macOS/Linux (the feature is a no-op elsewhere).
 install:
 ifeq ($(shell uname),Darwin)
-	$(CARGO) install --path . --locked --features mount
+	$(CARGO) install --path cli --locked --features mount
 else ifeq ($(shell uname),Linux)
-	$(CARGO) install --path . --locked --features mount
+	$(CARGO) install --path cli --locked --features mount
 else
-	$(CARGO) install --path . --locked
+	$(CARGO) install --path cli --locked
 endif
 
 test:
@@ -79,6 +79,16 @@ lint:
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
 
 check: fmt lint test
+
+# Non-mutating verification, mirroring the GitHub Actions CI
+# (.github/workflows/ci.yml): fmt is checked (not rewritten), and tests run
+# under nextest so each test gets its own process — the mount tests share a
+# process-global OAK_MOUNTS_ROOT env var and race under `cargo test`'s in-process
+# threads, but pass cleanly when isolated. Needs `cargo install cargo-nextest`.
+ci:
+	$(CARGO) fmt --all --check
+	$(CARGO) clippy --workspace --all-targets -- -D warnings
+	$(CARGO) nextest run --workspace
 
 # ----------------------------------------------------------------------------
 # Release binaries (mount-free, cross-compiled from one host)
@@ -160,7 +170,7 @@ build-release-linux-mount:
 	@if [ "$$(uname -s)" != "Linux" ]; then echo "Error: build-release-linux-mount must run on a Linux host (mount cannot cross-compile from $$(uname -s))."; exit 1; fi
 	@command -v fusermount3 >/dev/null || echo "Warning: fusermount3 not found on this build host. The binary will still build (pure-rust backend, no link-time libfuse), but 'oak mount' needs the 'fuse3' package at runtime."
 	@mkdir -p target/releases
-	$(CARGO) build --release --package oak-cli --features mount
+	$(CARGO) build --release --package oakvcs-cli --features mount
 	cp target/release/oak target/releases/oak-linux-x86_64
 	@echo "Mount-enabled linux-x86_64 binary written to target/releases/oak-linux-x86_64"
 	@echo "Verify it does not hard-link libfuse:  ldd target/releases/oak-linux-x86_64 | grep -i fuse  (expect no output)"

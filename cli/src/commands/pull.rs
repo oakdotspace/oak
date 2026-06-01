@@ -3,8 +3,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use oak_core::{
-    reassemble_chunks, Blob, Branch, BranchStatus, ChangeType, ChunkInfo, Commit, FileChange,
-    Hash, MetadataKey, OakError, Result,
+    reassemble_chunks, Blob, Branch, BranchStatus, ChangeType, ChunkInfo, Commit, FileChange, Hash,
+    MetadataKey, OakError, Result,
 };
 use oak_core::{Repository, SqliteRepository};
 use tokio::sync::Semaphore;
@@ -27,10 +27,10 @@ const BULK_FLUSH_BYTES: u64 = 64 * 1024 * 1024;
 // this module has always used. `BlobData` is re-exported because `repo.rs`'s
 // clone path imports it via `super::pull::BlobData` and shares
 // `fetch_and_store_blobs`.
+pub use oak_core::protocol::BlobData;
 use oak_core::protocol::{
     BranchPullData as BranchData, ChunkDownloadResponse, PullResponse, TreeData,
 };
-pub use oak_core::protocol::BlobData;
 
 fn wire_to_core_tree(td: &TreeData) -> oak_core::Result<oak_core::Tree> {
     oak_core::protocol::tree_data_to_core(td).map_err(OakError::Database)

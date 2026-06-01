@@ -1,0 +1,39 @@
+name: CI
+
+# Format, lint, and test the oak workspace (oakvcs-core + oakvcs-cli) on every
+# push to main and every pull request. Mirrors `make ci`.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pin to the repo's rust-toolchain.toml channel (1.94) with rustfmt+clippy.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - uses: taiki-e/install-action@nextest
+
+      # nextest runs each test in its own process. The mount tests set a
+      # process-global OAK_MOUNTS_ROOT and race under `cargo test`'s in-process
+      # threads; per-process isolation makes them deterministic.
+      - name: Test
+        run: cargo nextest run --workspace

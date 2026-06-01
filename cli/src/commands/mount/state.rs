@@ -11,6 +11,7 @@
 //! `oak mount status|commit|push` can find the right state from a destination
 //! directory alone.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -122,9 +123,35 @@ pub struct DirtyEntry {
     pub in_place: bool,
 }
 
-/// Root for all mount state. Defaults to `~/.oak/mounts/`. Tests and
-/// sandboxed runs may set `OAK_MOUNTS_ROOT` to point somewhere else.
+thread_local! {
+    /// Per-thread override for the mounts root. Takes precedence over the
+    /// `OAK_MOUNTS_ROOT` env var and the `~/.oak/mounts` default.
+    ///
+    /// This exists so tests can isolate their on-disk mount state without
+    /// mutating the process-global environment: `cargo test` runs each test on
+    /// its own thread, so a per-thread override gives each test a private root
+    /// and eliminates the shared-index race that a single process-global root
+    /// (env var) would cause under multi-threaded execution. Production code
+    /// never sets this, so the env / home resolution below is unchanged for
+    /// real CLI usage.
+    static MOUNTS_ROOT_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Override the mounts root for the current thread. Intended for tests; pass a
+/// distinct temp dir per test so their state never collides. Production callers
+/// should not use this — they rely on the env / home resolution in
+/// [`mounts_root`].
+pub fn set_mounts_root(root: PathBuf) {
+    MOUNTS_ROOT_OVERRIDE.with(|cell| *cell.borrow_mut() = Some(root));
+}
+
+/// Root for all mount state. Resolution order: a per-thread override (set via
+/// [`set_mounts_root`], used by tests), then the `OAK_MOUNTS_ROOT` env var,
+/// then the `~/.oak/mounts/` default.
 pub fn mounts_root() -> Result<PathBuf> {
+    if let Some(root) = MOUNTS_ROOT_OVERRIDE.with(|cell| cell.borrow().clone()) {
+        return Ok(root);
+    }
     if let Ok(root) = std::env::var("OAK_MOUNTS_ROOT") {
         if !root.is_empty() {
             return Ok(PathBuf::from(root));

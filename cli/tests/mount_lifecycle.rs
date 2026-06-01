@@ -8,28 +8,24 @@
 
 use std::fs;
 use std::path::Path;
-use std::sync::OnceLock;
 
 use oak_cli::commands::mount;
 use oak_core::{Branch, BranchStatus, ManifestEntry, MetadataKey};
 use oak_core::{Repository, SqliteRepository};
 use tempfile::TempDir;
 
-/// Set `OAK_MOUNTS_ROOT` once per test process to a leaked temp dir, so
-/// every mount-lifecycle test stores state under an isolated root rather
-/// than the user's `~/.oak/mounts/`.
+/// Give the *current test thread* its own isolated mounts root, so each test
+/// stores state under a private temp dir rather than the user's
+/// `~/.oak/mounts/` — and, crucially, never shares the mount index with any
+/// other test. `cargo test` runs each test on its own thread, so the
+/// per-thread override in [`mount::state::set_mounts_root`] makes the roots
+/// fully disjoint and eliminates the parallel index race. The temp dir is
+/// leaked so it stays alive for the whole test (commands re-resolve the root
+/// on every call, so we never need to hand the handle back to the caller).
 fn isolated_root() {
-    static ONCE: OnceLock<()> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        let temp = TempDir::new().expect("temp dir for mounts root");
-        // SAFETY: Rust 1.79+ marked `set_var` unsafe. We only call it here,
-        // before any background threads are spawned by these tests, so the
-        // typical race conditions don't apply.
-        unsafe {
-            std::env::set_var("OAK_MOUNTS_ROOT", temp.path());
-        }
-        std::mem::forget(temp); // keep the dir alive for the test process
-    });
+    let temp = TempDir::new().expect("temp dir for mounts root");
+    mount::state::set_mounts_root(temp.path().to_path_buf());
+    std::mem::forget(temp); // keep the dir alive for the test's duration
 }
 
 /// Build a mount state dir for `dest`, with one base file `README.md` whose
@@ -285,6 +281,8 @@ fn mount_dest_for_finds_registered_mount() {
 
 #[test]
 fn mount_dest_for_returns_none_outside_mount() {
+    // Isolate the index so we don't read the real `~/.oak/mounts/index.json`.
+    isolated_root();
     // A fresh temp dir that's never been registered shouldn't resolve.
     let temp = TempDir::new().unwrap();
     let resolved = mount::mount_dest_for(temp.path()).unwrap();
