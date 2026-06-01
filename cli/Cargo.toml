@@ -47,8 +47,6 @@ chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 dialoguer = { version = "0.12", features = ["fuzzy-select"] }
-sha2 = "0.11"
-hex = "0.4"
 # Verify-only minisign implementation (pure Rust, no libsodium). `oak upgrade`
 # uses it to check the signature on a downloaded release binary against the
 # public key baked into the CLI (RELEASE_PUBKEY in commands/upgrade.rs).

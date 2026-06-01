@@ -6,25 +6,23 @@ use std::os::unix::fs::PermissionsExt;
 use dialoguer::Confirm;
 use minisign_verify::{PublicKey, Signature};
 use oak_core::{OakError, Result};
-use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 use crate::output;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Minisign public key that release binaries are signed against. The matching
-/// secret key signs each binary at release time (`cli/Makefile`'s
-/// `MINISIGN_SECKEY`) and is held OFF the release server — so even a fully
-/// compromised release server cannot ship a binary that passes this check.
-/// This is the real authenticity check; the SHA-256 verification just above it
-/// only guards against corruption (the checksum comes from the same server as
-/// the binary).
+/// secret key signs each binary at release time (the root `Makefile`'s
+/// `sign-release`, driven by the `MINISIGN_SECKEY` GitHub Actions secret) and is
+/// held OFF the distribution channel — it never touches GitHub. So even if the
+/// GitHub Release is tampered with, a forged binary cannot pass this check. This
+/// signature is the integrity AND authenticity check for `oak upgrade`.
 ///
 /// TODO(release): replace this with YOUR production public key before cutting
-/// the first signed release. Generate a keypair once with `minisign -G` (keep
-/// the `.key` secret key safe and out of the repo) and paste the base64 line
-/// from the `.pub` file here. The value below is a throwaway dev key.
+/// the first signed release. Generate a keypair once with `minisign -G` (or
+/// `minisign -G -W` for a passwordless CI key; keep the `.key` secret key safe
+/// and out of the repo) and paste the base64 line from the `.pub` file here. The
+/// value below is a throwaway dev key.
 const RELEASE_PUBKEY: &str = "RWTQfszCQoIlhp/XG+dV3JXg8Yibl4e8ANvI0CgF2Ftar2OCf0JUb83E";
 
 /// Verify a minisign `signature` over `data` against `pubkey_b64` (the bare
@@ -40,9 +38,72 @@ fn verify_release_signature(pubkey_b64: &str, signature: &str, data: &[u8]) -> R
         .map_err(|e| OakError::Server(format!("Release signature verification failed: {e}")))
 }
 
-#[derive(Deserialize)]
-struct LatestResponse {
-    version: String,
+/// GitHub repo that hosts `oak` releases (`owner/name`). Releases are published
+/// here — the binary, its `.minisig`, and `SHA256SUMS` are attached as release
+/// assets. Overridable via `OAK_RELEASE_REPO` for forks / self-hosting / tests.
+const RELEASE_REPO: &str = "oakvcs/oak";
+
+fn release_repo() -> String {
+    env::var("OAK_RELEASE_REPO").unwrap_or_else(|_| RELEASE_REPO.to_string())
+}
+
+/// Pull the release tag (e.g. `v0.95.0`) out of the `Location` URL that GitHub's
+/// `/releases/latest` redirect points at
+/// (`https://github.com/<repo>/releases/tag/v0.95.0`). Returns `None` if the URL
+/// isn't a release-tag link.
+fn parse_tag_from_location(location: &str) -> Option<String> {
+    // Drop any query/fragment, trim a trailing slash, then take the segment
+    // after `/releases/tag/`.
+    let path = location
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(location)
+        .trim_end_matches('/');
+    let (_, tag) = path.rsplit_once("/releases/tag/")?;
+    if tag.is_empty() || tag.contains('/') {
+        None
+    } else {
+        Some(tag.to_string())
+    }
+}
+
+/// Resolve the latest published release tag by following GitHub's
+/// `/releases/latest` redirect. `client` MUST have redirect-following **disabled**
+/// so the `Location` header (pointing at `.../releases/tag/<tag>`) is readable.
+/// Returns `Ok(None)` when the repo has no published, non-prerelease release.
+///
+/// Uses the web redirect rather than `api.github.com` deliberately: it needs no
+/// auth and doesn't count against the unauthenticated API rate limit, so the
+/// once-a-day version check stays reliable even behind shared/NAT'd IPs.
+pub(crate) async fn fetch_latest_tag(client: &reqwest::Client) -> Result<Option<String>> {
+    let repo = release_repo();
+    let resp = client
+        .get(format!("https://github.com/{repo}/releases/latest"))
+        .header("user-agent", format!("oak-cli/{VERSION}"))
+        .send()
+        .await
+        .map_err(|e| OakError::Http(e.to_string()))?;
+
+    let status = resp.status();
+    if status.is_redirection() {
+        let location = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                OakError::Server(
+                    "GitHub latest-release redirect had no Location header".to_string(),
+                )
+            })?;
+        Ok(parse_tag_from_location(location))
+    } else if status.as_u16() == 404 {
+        // Repo has no published release yet.
+        Ok(None)
+    } else {
+        Err(OakError::Server(format!(
+            "Unexpected response resolving latest release: HTTP {status}"
+        )))
+    }
 }
 
 /// Detect the current platform string
@@ -79,8 +140,10 @@ pub fn is_newer_version(current: &str, latest: &str) -> bool {
     latest_v > current_v
 }
 
-/// Run the upgrade command
-pub async fn run(remote: &str, force: bool) -> Result<()> {
+/// Run the upgrade command. Releases are pulled from GitHub Releases (see
+/// [`RELEASE_REPO`]); the downloaded binary is verified against its `.minisig`
+/// before being swapped into place.
+pub async fn run(force: bool) -> Result<()> {
     let platform = detect_platform()?;
     let current_version = format!("v{VERSION}");
 
@@ -88,41 +151,32 @@ pub async fn run(remote: &str, force: bool) -> Result<()> {
     output::info(&format!("Platform: {platform}"));
     output::info("Checking for updates...");
 
-    // Check latest version
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("{remote}/api/releases/latest"))
-        .send()
-        .await
+    // Latest-version lookup needs redirects DISABLED so we can read the
+    // `Location` header off GitHub's `/releases/latest` 302.
+    let latest_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
         .map_err(|e| OakError::Http(e.to_string()))?;
 
-    if resp.status().as_u16() == 404 {
-        output::info("No releases available on the server.");
-        return Ok(());
-    }
+    let latest_version = match fetch_latest_tag(&latest_client).await? {
+        Some(tag) => tag,
+        None => {
+            output::info("No releases available.");
+            return Ok(());
+        }
+    };
 
-    if !resp.status().is_success() {
-        let err_text = resp.text().await.unwrap_or_default();
-        return Err(OakError::Server(err_text));
-    }
-
-    let latest: LatestResponse = resp
-        .json()
-        .await
-        .map_err(|e| OakError::Http(e.to_string()))?;
-
-    output::info(&format!("Latest version: {}", latest.version));
+    output::info(&format!("Latest version: {latest_version}"));
 
     // Check if upgrade is needed
-    if !is_newer_version(&current_version, &latest.version) {
+    if !is_newer_version(&current_version, &latest_version) {
         output::success("You are already running the latest version!");
         return Ok(());
     }
 
     println!();
     output::info(&format!(
-        "A new version is available: {} -> {}",
-        current_version, latest.version
+        "A new version is available: {current_version} -> {latest_version}"
     ));
 
     // Confirm upgrade
@@ -139,42 +193,28 @@ pub async fn run(remote: &str, force: bool) -> Result<()> {
         }
     }
 
-    // Get expected checksum
-    output::info("Fetching checksum...");
-    let checksum_resp = client
-        .get(format!(
-            "{}/api/releases/{}/{}/sha256",
-            remote, latest.version, platform
-        ))
-        .send()
-        .await
-        .map_err(|e| OakError::Http(e.to_string()))?;
+    let repo = release_repo();
+    let binary_url =
+        format!("https://github.com/{repo}/releases/download/{latest_version}/oak-{platform}");
 
-    if !checksum_resp.status().is_success() {
-        return Err(OakError::Server(format!(
-            "Release {} not available for platform {}",
-            latest.version, platform
-        )));
-    }
-
-    let expected_sha256 = checksum_resp
-        .text()
-        .await
-        .map_err(|e| OakError::Http(e.to_string()))?;
+    // Asset downloads follow redirects (GitHub serves release assets via a
+    // redirect to its object store).
+    let client = reqwest::Client::new();
 
     // Download the new binary
     output::info("Downloading new version...");
     let download_resp = client
-        .get(format!(
-            "{}/api/releases/{}/{}",
-            remote, latest.version, platform
-        ))
+        .get(&binary_url)
+        .header("user-agent", format!("oak-cli/{VERSION}"))
         .send()
         .await
         .map_err(|e| OakError::Http(e.to_string()))?;
 
     if !download_resp.status().is_success() {
-        return Err(OakError::Server("Failed to download release".to_string()));
+        return Err(OakError::Server(format!(
+            "Failed to download release {latest_version} for platform {platform} (HTTP {})",
+            download_resp.status()
+        )));
     }
 
     let binary_data = download_resp
@@ -182,39 +222,22 @@ pub async fn run(remote: &str, force: bool) -> Result<()> {
         .await
         .map_err(|e| OakError::Http(e.to_string()))?;
 
-    // Verify checksum
-    output::info("Verifying checksum...");
-    let mut hasher = Sha256::new();
-    hasher.update(&binary_data);
-    let actual_sha256 = hex::encode(hasher.finalize());
-
-    if actual_sha256 != expected_sha256 {
-        return Err(OakError::Server(format!(
-            "Checksum mismatch! Expected: {expected_sha256}, Got: {actual_sha256}"
-        )));
-    }
-
-    output::success("Checksum verified!");
-
-    // Verify the minisign signature over the downloaded binary. This is the
-    // authenticity check (the checksum above only catches corruption, since it
-    // comes from the same server). The signing key lives off the release
-    // server, so this is what stops a compromised server from shipping a forged
-    // binary. Fail closed: an unsigned release or a bad signature aborts.
+    // Verify the minisign signature over the downloaded binary. With the binary
+    // and its signature both served from GitHub, this is the integrity AND
+    // authenticity check: the signing key lives off the distribution channel (it
+    // never touches GitHub), so a valid signature is what proves the bytes are a
+    // genuine Oak release. Fail closed — a missing or bad signature aborts.
     output::info("Verifying signature...");
     let sig_resp = client
-        .get(format!(
-            "{}/api/releases/{}/{}/minisig",
-            remote, latest.version, platform
-        ))
+        .get(format!("{binary_url}.minisig"))
+        .header("user-agent", format!("oak-cli/{VERSION}"))
         .send()
         .await
         .map_err(|e| OakError::Http(e.to_string()))?;
 
     if !sig_resp.status().is_success() {
         return Err(OakError::Server(format!(
-            "Release {} for {} has no signature on the server — refusing to upgrade.",
-            latest.version, platform
+            "Release {latest_version} for {platform} has no signature — refusing to upgrade."
         )));
     }
 
@@ -267,8 +290,7 @@ pub async fn run(remote: &str, force: bool) -> Result<()> {
 
     println!();
     output::success(&format!(
-        "Successfully upgraded oak from {} to {}!",
-        current_version, latest.version
+        "Successfully upgraded oak from {current_version} to {latest_version}!"
     ));
 
     Ok(())
@@ -310,5 +332,37 @@ jxJE7ZGdfjP6hE9SCW/HPmkcGivAlIeMIZLWuQIlhLko+CuS6at3uYq6HeFkYquKaZoZps2P1tjOBwE+
     #[test]
     fn rejects_malformed_signature() {
         assert!(verify_release_signature(TEST_PUBKEY, "not a signature", TEST_DATA).is_err());
+    }
+
+    #[test]
+    fn parses_tag_from_release_location() {
+        assert_eq!(
+            parse_tag_from_location("https://github.com/oakvcs/oak/releases/tag/v0.95.0"),
+            Some("v0.95.0".to_string())
+        );
+        // Trailing slash, query, and fragment are all tolerated.
+        assert_eq!(
+            parse_tag_from_location("https://github.com/oakvcs/oak/releases/tag/v1.2.3/"),
+            Some("v1.2.3".to_string())
+        );
+        assert_eq!(
+            parse_tag_from_location("https://github.com/oakvcs/oak/releases/tag/v1.2.3?foo=bar"),
+            Some("v1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_non_release_location() {
+        // A repo with no releases redirects to /releases, not /releases/tag/<tag>.
+        assert_eq!(
+            parse_tag_from_location("https://github.com/oakvcs/oak/releases"),
+            None
+        );
+        assert_eq!(parse_tag_from_location("https://example.com/"), None);
+        // No tag segment after /tag/.
+        assert_eq!(
+            parse_tag_from_location("https://github.com/oakvcs/oak/releases/tag/"),
+            None
+        );
     }
 }

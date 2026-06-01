@@ -13,6 +13,17 @@ CARGO ?= $(shell if command -v cargo >/dev/null 2>&1; then command -v cargo; eli
 # for newer hosts.
 GLIBC_VER ?= 2.31
 
+# Set LINUX_MOUNT=1 to build the mount-enabled Linux binaries (see
+# build-release-linux). --features can't be passed at a virtual-workspace root,
+# so the mount build scopes to -p oakvcs-cli; the mount-free build builds the
+# whole workspace as before.
+LINUX_MOUNT ?=
+ifeq ($(LINUX_MOUNT),1)
+ZIG_BUILD_ARGS := --package oakvcs-cli --features mount
+else
+ZIG_BUILD_ARGS :=
+endif
+
 # macOS code signing. SHA-1 hash of the "Developer ID Application" cert used to
 # sign the darwin binaries (a hash, not the name, because two valid Developer
 # ID certs share that name and signing-by-name is ambiguous). Signing is
@@ -33,6 +44,11 @@ SIGN_IDENTITY ?= 981A6F2BB57517E4CA6A4F80CF3D1693F0F5191F
 # UNSIGNED release will be REFUSED by `oak upgrade` (it fails closed).
 MINISIGN ?= minisign
 MINISIGN_SECKEY ?=
+# Optional passphrase for MINISIGN_SECKEY. When set, it's piped to `minisign -S`
+# over stdin so signing runs non-interactively in CI (minisign reads the
+# password from stdin when it isn't a TTY). Leave empty for an interactive
+# prompt locally, or for a passwordless key (`minisign -G -W`).
+MINISIGN_PASSWORD ?=
 
 # macOS notarization. Requires a stored notarytool credential profile, created
 # once with:
@@ -48,7 +64,8 @@ NOTARY_PROFILE ?= oak-notary
 VERSION ?= v$(shell awk '/^\[workspace.package\]/{f=1} f&&/^version *=/{gsub(/[" ]/,"");split($$0,a,"=");print a[2];exit}' Cargo.toml)
 
 .PHONY: build install test fmt lint check ci \
-        build-release-all build-release-linux-mount sign-release notarize-mac \
+        build-release-all build-release-macos build-release-linux \
+        build-release-linux-mount sign-release notarize-mac \
         upload-release release-all
 
 # ----------------------------------------------------------------------------
@@ -113,10 +130,23 @@ ci:
 # feature does not cross-compile (fuser's build.rs gates its backend on the
 # *host* OS), so the mount-enabled linux binary is built natively on a Linux
 # host (see build-release-linux-mount) and overwrites its artifact before upload.
-build-release-all:
-	@echo "Building release binaries for all platforms..."
+#
+# build-release-all is the single-host (one Mac) entry point. The GitHub Actions
+# release workflow instead calls the per-OS targets below directly, so each
+# platform builds on its own native runner — that's what lets the Linux binaries
+# be built mount-enabled (LINUX_MOUNT=1), which does not cross-compile from macOS.
+build-release-all: build-release-macos build-release-linux sign-release
+	@echo "Release binaries built in target/releases/"
+	@ls -la target/releases/
+
+# macOS half of the release: build + Developer-ID-sign the two darwin arches.
+# Runs on macOS only (the Apple SDK cross-compiles between its own arches, so no
+# zig is needed here). Mount-free — a mount-enabled mac binary hard-links
+# libfuse.2.dylib and won't launch without macFUSE.
+build-release-macos:
+	@[ "$$(uname -s)" = "Darwin" ] || { echo "Error: build-release-macos must run on macOS."; exit 1; }
+	@echo "Building macOS release binaries..."
 	@mkdir -p target/releases
-	# --- macOS: native Apple cross-compile (no zig) -------------------------
 	@for t in aarch64-apple-darwin x86_64-apple-darwin; do \
 		rustup target list --installed 2>/dev/null | grep -qx "$$t" || { echo "Error: rust target $$t not installed. Install with: rustup target add $$t"; exit 1; }; \
 	done
@@ -126,7 +156,7 @@ build-release-all:
 	@echo "Building darwin-x86_64..."
 	$(CARGO) build --release --target x86_64-apple-darwin
 	cp target/x86_64-apple-darwin/release/oak target/releases/oak-darwin-x86_64
-	# --- macOS: Developer ID code signing -----------------------------------
+	# --- Developer ID code signing ------------------------------------------
 	# Hardened runtime (--options runtime) + a trusted timestamp keep the
 	# binaries notarization-ready. Skips gracefully (ad-hoc signature retained)
 	# when the cert isn't on this machine, so non-release builds still work.
@@ -139,25 +169,36 @@ build-release-all:
 	else \
 		echo "Warning: signing identity '$(SIGN_IDENTITY)' not in keychain — darwin binaries left ad-hoc signed (they run, but are not Developer-ID signed)."; \
 	fi
-	# --- Linux: cargo-zigbuild cross-compile (no Docker) --------------------
+
+# Linux half of the release: cargo-zigbuild both linux arches (no Docker),
+# pinned to glibc $(GLIBC_VER) for broad distro compatibility. reqwest is on
+# rustls + webpki-roots (no OpenSSL) and every unix-only path is #[cfg(unix)]-
+# gated, which is what lets Linux cross-compile cleanly.
+#
+# LINUX_MOUNT=1 builds the mount-enabled CLI. On Linux the fuser backend is
+# default-features = false: it never link-time-depends on libfuse and execs the
+# `fusermount3` setuid helper at runtime, so the binary still RUNS without fuse3
+# installed (only `oak mount` itself needs it). Because --features can't be
+# passed at a virtual-workspace root, the mount build targets -p oakvcs-cli.
+# Run this on a Linux host (zigbuild's host=linux makes the fusermount3 backend
+# compile for both linux targets, including the arm64 cross).
+build-release-linux:
 	@command -v cargo-zigbuild >/dev/null || { echo "Error: cargo-zigbuild not found. Install with: cargo install cargo-zigbuild"; exit 1; }
-	@command -v zig >/dev/null || { echo "Error: zig not found. Install with: brew install zig"; exit 1; }
+	@command -v zig >/dev/null || { echo "Error: zig not found. Install with: brew install zig (or your distro's package)"; exit 1; }
+	@mkdir -p target/releases
 	@for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do \
 		rustup target list --installed 2>/dev/null | grep -qx "$$t" || { echo "Error: rust target $$t not installed. Install with: rustup target add $$t"; exit 1; }; \
 	done
+	@if [ "$(LINUX_MOUNT)" = "1" ]; then echo "Linux binaries: MOUNT-ENABLED (oak mount available; needs fuse3 at runtime)."; else echo "Linux binaries: mount-free."; fi
 	# `ulimit -n` shell-builtin must be on the same line as each zigbuild:
 	# Zig's linker opens many rlibs in parallel and blows past macOS's default
 	# 256 fd limit with ProcessFdQuotaExceeded.
 	@echo "Building linux-x86_64 (glibc $(GLIBC_VER))..."
-	ulimit -n 65536 && $(CARGO) zigbuild --release --target x86_64-unknown-linux-gnu.$(GLIBC_VER)
+	ulimit -n 65536 && $(CARGO) zigbuild --release $(ZIG_BUILD_ARGS) --target x86_64-unknown-linux-gnu.$(GLIBC_VER)
 	cp target/x86_64-unknown-linux-gnu/release/oak target/releases/oak-linux-x86_64
 	@echo "Building linux-arm64 (glibc $(GLIBC_VER))..."
-	ulimit -n 65536 && $(CARGO) zigbuild --release --target aarch64-unknown-linux-gnu.$(GLIBC_VER)
+	ulimit -n 65536 && $(CARGO) zigbuild --release $(ZIG_BUILD_ARGS) --target aarch64-unknown-linux-gnu.$(GLIBC_VER)
 	cp target/aarch64-unknown-linux-gnu/release/oak target/releases/oak-linux-arm64
-	# --- minisign signing (all platforms) -----------------------------------
-	@$(MAKE) --no-print-directory sign-release
-	@echo "Release binaries built in target/releases/"
-	@ls -la target/releases/
 
 # Build the mount-enabled linux-x86_64 binary. MUST run on a Linux host
 # (native build) — the mount feature does not cross-compile from macOS. The
@@ -189,7 +230,11 @@ sign-release:
 		for b in oak-darwin-arm64 oak-darwin-x86_64 oak-linux-x86_64 oak-linux-arm64; do \
 			[ -f "target/releases/$$b" ] || continue; \
 			echo "Signing $$b (minisign)..."; \
-			$(MINISIGN) -S -s "$(MINISIGN_SECKEY)" -m "target/releases/$$b" -x "target/releases/$$b.minisig" || exit 1; \
+			if [ -n "$(MINISIGN_PASSWORD)" ]; then \
+				printf '%s\n' "$(MINISIGN_PASSWORD)" | $(MINISIGN) -S -s "$(MINISIGN_SECKEY)" -m "target/releases/$$b" -x "target/releases/$$b.minisig" || exit 1; \
+			else \
+				$(MINISIGN) -S -s "$(MINISIGN_SECKEY)" -m "target/releases/$$b" -x "target/releases/$$b.minisig" || exit 1; \
+			fi; \
 		done; \
 		echo "minisign signatures written (*.minisig)."; \
 	fi

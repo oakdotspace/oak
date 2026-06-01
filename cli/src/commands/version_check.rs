@@ -14,21 +14,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 
-use crate::commands::upgrade::is_newer_version;
+use crate::commands::upgrade::{fetch_latest_tag, is_newer_version};
 use crate::output::colors;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// How long to wait between network checks (24 hours).
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
-
-/// Default server the check talks to, overridable via `OAK_REMOTE`.
-const DEFAULT_REMOTE: &str = "https://oakvcs.com";
-
-#[derive(Deserialize)]
-struct LatestResponse {
-    version: String,
-}
 
 /// Persisted state at `~/.oak/version_check`. `last_check` is a Unix timestamp
 /// (seconds) of the last *attempt* — written even when the attempt failed, so a
@@ -67,23 +59,19 @@ fn save_state(path: &PathBuf, state: &State) {
     }
 }
 
-/// Query the server for the latest released version. Short timeout; returns
-/// `None` on any error or if no releases are published.
-async fn fetch_latest(remote: &str) -> Option<String> {
+/// Query GitHub Releases for the latest published version tag. Short timeout;
+/// returns `None` on any error or if no releases are published. Shares the
+/// redirect-based lookup with `oak upgrade` (see [`fetch_latest_tag`]) so the
+/// daily notifier and the upgrade command always agree on "latest".
+async fn fetch_latest() -> Option<String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
+        // Redirects disabled so `fetch_latest_tag` can read the `Location`
+        // header off GitHub's `/releases/latest` 302.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .ok()?;
-    let resp = client
-        .get(format!("{remote}/api/releases/latest"))
-        .send()
-        .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let latest: LatestResponse = resp.json().await.ok()?;
-    Some(latest.version)
+    fetch_latest_tag(&client).await.ok().flatten()
 }
 
 /// Print the upgrade prompt to stderr (never stdout, so piped command output
@@ -119,8 +107,7 @@ pub fn maybe_notify(rt: &Runtime) {
         }
     }
 
-    let remote = std::env::var("OAK_REMOTE").unwrap_or_else(|_| DEFAULT_REMOTE.to_string());
-    let latest = rt.block_on(fetch_latest(&remote));
+    let latest = rt.block_on(fetch_latest());
 
     // Record the attempt regardless of outcome so we don't re-check until the
     // window elapses again.

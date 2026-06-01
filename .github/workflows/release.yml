@@ -1,0 +1,233 @@
+name: Release
+
+# Build, sign, and publish the `oak` CLI to GitHub Releases.
+#
+# Manually triggered (workflow_dispatch). Three jobs:
+#   macos   — build + Developer-ID-sign darwin-arm64 / darwin-x86_64 (mount-free)
+#   linux   — cargo-zigbuild linux-x86_64 / linux-arm64, MOUNT-ENABLED, glibc 2.31
+#   release — minisign every binary, then publish them as GitHub Release assets
+#
+# Distribution is GitHub Releases (`github.com/<this repo>`); `oak upgrade` and
+# the daily version check resolve the latest release from there and verify each
+# download against the minisign RELEASE_PUBKEY baked into the CLI. The signing
+# key lives only in CI secrets (off the distribution channel), so a compromised
+# release can't be forged. See the root Makefile for the build/sign targets this
+# wraps and cli/src/commands/upgrade.rs for the verify side.
+#
+# Required secrets (see the PR description for setup):
+#   MINISIGN_SECKEY, MINISIGN_PASSWORD            — release signing
+#   MACOS_CERT_P12_BASE64, MACOS_CERT_PASSWORD,
+#   MACOS_KEYCHAIN_PASSWORD                        — Developer ID codesigning
+#   MACOS_SIGN_IDENTITY (optional)                 — override cert SHA-1
+# Publishing uses the built-in GITHUB_TOKEN — no OAK_ADMIN_API_KEY needed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. v0.95.0 (blank = derive from Cargo.toml)"
+        required: false
+        type: string
+      dry_run:
+        description: "Build + sign only; skip publishing the GitHub Release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    env:
+      # Lifted to job scope so the import step's `if:` can test it.
+      MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Import the Developer ID Application cert into an ephemeral keychain so
+      # the Makefile's codesign step finds the identity. Skipped (binaries left
+      # ad-hoc signed, which the Makefile warns about but tolerates) when the
+      # cert secret isn't configured.
+      - name: Import Developer ID certificate
+        if: ${{ env.MACOS_CERT_P12_BASE64 != '' }}
+        env:
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/oak-signing.keychain-db"
+          CERT="$RUNNER_TEMP/cert.p12"
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$CERT"
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # Prepend the signing keychain to the search list so codesign sees it.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          rm -f "$CERT"
+
+      - name: Build + sign macOS binaries
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
+            make build-release-macos SIGN_IDENTITY="$MACOS_SIGN_IDENTITY"
+          else
+            make build-release-macos
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oak-darwin
+          if-no-files-found: error
+          path: |
+            target/releases/oak-darwin-arm64
+            target/releases/oak-darwin-x86_64
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Zig is the cross-linker cargo-zigbuild drives; it's what lets us pin the
+      # glibc floor (2.31) and cross to arm64 from an x86_64 runner.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      # LINUX_MOUNT=1 → mount-enabled. The Linux fuser backend never links
+      # libfuse (it execs fusermount3 at runtime), so the binary runs without
+      # fuse3 installed; only `oak mount` itself needs it.
+      - name: Build Linux binaries (mount-enabled, glibc 2.31)
+        run: make build-release-linux LINUX_MOUNT=1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oak-linux
+          if-no-files-found: error
+          path: |
+            target/releases/oak-linux-x86_64
+            target/releases/oak-linux-arm64
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [macos, linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect built binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: target/releases
+          merge-multiple: true
+
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
+      - name: Sign binaries (minisign)
+        env:
+          MINISIGN_SECKEY_CONTENTS: ${{ secrets.MINISIGN_SECKEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECKEY_CONTENTS:-}" ]; then
+            echo "::error::MINISIGN_SECKEY secret is not set — releases must be signed (oak upgrade fails closed on unsigned binaries)."
+            exit 1
+          fi
+          KEY="$RUNNER_TEMP/release.key"
+          printf '%s\n' "$MINISIGN_SECKEY_CONTENTS" > "$KEY"
+          make sign-release MINISIGN_SECKEY="$KEY" MINISIGN_PASSWORD="${MINISIGN_PASSWORD:-}"
+          rm -f "$KEY"
+
+      - name: Generate SHA256SUMS
+        working-directory: target/releases
+        run: shasum -a 256 oak-darwin-arm64 oak-darwin-x86_64 oak-linux-x86_64 oak-linux-arm64 > SHA256SUMS
+
+      # The release tag must equal the binary's CARGO_PKG_VERSION — that's what
+      # `oak upgrade` compares (upgrade.rs is_newer_version). Fail loudly on a
+      # mismatch rather than ship a vX binary under a vY tag.
+      - name: Determine version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          CARGO_VERSION="v$(awk '/^\[workspace.package\]/{f=1} f&&/^version *=/{gsub(/[" ]/,"");split($0,a,"=");print a[2];exit}' Cargo.toml)"
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            if [ "$INPUT_VERSION" != "$CARGO_VERSION" ]; then
+              echo "::error::version input '$INPUT_VERSION' != Cargo.toml version '$CARGO_VERSION'. Bump Cargo.toml or fix the input."
+              exit 1
+            fi
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION="$CARGO_VERSION"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Release version: $VERSION"
+
+      # Always keep the signed bundle as a run artifact — the only output on a
+      # dry run, and a handy audit trail on a real release.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oak-release-signed
+          if-no-files-found: error
+          path: |
+            target/releases/oak-*
+            target/releases/SHA256SUMS
+
+      - name: Publish GitHub Release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd target/releases
+          ASSETS=(
+            oak-darwin-arm64 oak-darwin-x86_64 oak-linux-x86_64 oak-linux-arm64
+            oak-darwin-arm64.minisig oak-darwin-x86_64.minisig
+            oak-linux-x86_64.minisig oak-linux-arm64.minisig
+            SHA256SUMS
+          )
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists — clobbering assets."
+            gh release upload "$VERSION" "${ASSETS[@]}" --clobber
+          else
+            gh release create "$VERSION" \
+              --title "$VERSION" \
+              --target "$GITHUB_SHA" \
+              --latest \
+              --generate-notes \
+              "${ASSETS[@]}"
+          fi
+          echo "Published $VERSION to $GH_REPO."

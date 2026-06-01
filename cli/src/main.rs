@@ -282,12 +282,8 @@ enum Commands {
         force: bool,
     },
 
-    /// Upgrade oak to the latest version
+    /// Upgrade oak to the latest version (from GitHub Releases)
     Upgrade {
-        /// Remote server URL
-        #[arg(short, long, env = "OAK_REMOTE", default_value = "https://oakvcs.com")]
-        remote: String,
-
         /// Skip confirmation prompt
         #[arg(short, long)]
         force: bool,
@@ -1018,7 +1014,7 @@ fn main() {
             force,
         } => commands::export::run(&cwd, &dest, branch.as_deref(), git_branch.as_deref(), force),
 
-        Commands::Upgrade { remote, force } => rt.block_on(commands::upgrade::run(&remote, force)),
+        Commands::Upgrade { force } => rt.block_on(commands::upgrade::run(force)),
 
         Commands::Tag { action } => match action {
             TagCommands::Create { name, commit } => {
@@ -1324,7 +1320,7 @@ fn print_help() {
     print_cmd("archive", "[-o OUTPUT]", "Create a zip archive");
     print_cmd("open", "", "Open the project in a browser");
     print_cmd("query", "", "Open a SQLite shell to the repo db");
-    print_cmd("upgrade", "[-r URL] [-f]", "Upgrade the Oak CLI");
+    print_cmd("upgrade", "[-f]", "Upgrade the Oak CLI");
 
     println!("\nRun {GREEN}oak <command> --help{RESET} for details on any command.\n");
     println!("{WHITE}{BOLD}Docs{RESET}      {GREEN}{UNDERLINE}https://oakvcs.com/docs{RESET}");
