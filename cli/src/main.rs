@@ -21,7 +21,7 @@ fn help_styles() -> Styles {
 
 #[derive(Parser)]
 #[command(name = "oak")]
-#[command(about = "Oak — version control for you and your agents")]
+#[command(about = "Oak — Branch freely")]
 #[command(version)]
 #[command(styles = help_styles())]
 struct Cli {
@@ -1201,7 +1201,7 @@ fn print_help() {
 
     // Banner + the public tagline, verbatim, in brand green.
     println!(
-        "{BRIGHT_GREEN}{BOLD}↟ Oak{RESET} version control for you and your agents. {DIM}(v{version}){RESET}\n"
+        "{BRIGHT_GREEN}{BOLD}↟ Oak{RESET} Branch freely. {DIM}(v{version}){RESET}\n"
     );
     println!(
         "{WHITE}{BOLD}Usage:{RESET} oak {DIM}[--verbose]{RESET} <command> {DIM}[flags] [args]{RESET}\n"
