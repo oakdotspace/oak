@@ -1,8 +1,9 @@
-//! Lazy blob fetch for view-dependency resolution.
+//! Lazy blob fetch for on-demand hydration.
 //!
-//! When a user activates a view with pinned dependencies, they may not have
-//! every blob needed by the dep manifests — `oak pull` only fetches blobs
-//! matching the active view's filter, so blobs outside that scope are absent.
+//! A mount (or a scoped `--team`/`--project` clone) only materializes the
+//! blobs it needs up front — `oak pull` fetches blobs matching the active
+//! scope's filter, so blobs outside that scope are absent locally until
+//! something references them.
 //!
 //! This module provides [`ensure_blobs_local`], which fills those gaps on
 //! demand using two server endpoints:
@@ -144,8 +145,8 @@ struct CommitInfoResponse {
 /// Ensure each commit in `commit_hashes` is present locally, fetching missing
 /// commits (and their manifests) from the remote. Does not touch blobs.
 ///
-/// Used during view-dependency resolution so a pin can target any commit the
-/// server knows about, not just commits the user has pulled.
+/// Used during lazy mount/pull hydration so an operation can reference any
+/// commit the server knows about, not just commits the user has pulled.
 pub async fn ensure_commits_local(
     repo: &SqliteRepository,
     remote_url: &str,

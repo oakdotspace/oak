@@ -152,6 +152,7 @@ pub mod export;
 pub mod fetch;
 pub mod git_clone;
 pub mod hash;
+pub mod histedit;
 pub mod hooks;
 pub mod init;
 pub mod log;

@@ -336,6 +336,23 @@ enum Commands {
     /// Show a visual tree of branches based on their parent links
     Tree,
 
+    /// Reorder a branch's commits and split them into independent branches.
+    ///
+    /// Like `git rebase -i` / `sl histedit`, plus a split step. Opens an
+    /// interactive editor by default; pass `--plan` to drive it from a
+    /// todo-list file (or `-` for stdin) so an agent can run it headless.
+    Histedit {
+        /// Edit this branch instead of the current one.
+        #[arg(long, value_name = "BRANCH")]
+        from: Option<String>,
+        /// Apply a todo-list plan non-interactively (file path, or `-` for stdin).
+        #[arg(long, value_name = "FILE")]
+        plan: Option<String>,
+        /// Print the resulting branch/commit structure without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Open a SQLite shell to the repository database (read-write).
     ///
     /// Arbitrary writes can corrupt this repository — only proceed if you
@@ -1075,6 +1092,12 @@ fn main() {
         Commands::Open => commands::open::run(&cwd),
 
         Commands::Tree => commands::tree::run(&cwd),
+
+        Commands::Histedit {
+            from,
+            plan,
+            dry_run,
+        } => commands::histedit::run(&cwd, from.as_deref(), plan.as_deref(), dry_run),
 
         Commands::Query => commands::query::run(&cwd),
 
