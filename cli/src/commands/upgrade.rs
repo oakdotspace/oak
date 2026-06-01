@@ -18,12 +18,12 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// GitHub Release is tampered with, a forged binary cannot pass this check. This
 /// signature is the integrity AND authenticity check for `oak upgrade`.
 ///
-/// TODO(release): replace this with YOUR production public key before cutting
-/// the first signed release. Generate a keypair once with `minisign -G` (or
-/// `minisign -G -W` for a passwordless CI key; keep the `.key` secret key safe
-/// and out of the repo) and paste the base64 line from the `.pub` file here. The
-/// value below is a throwaway dev key.
-const RELEASE_PUBKEY: &str = "RWTQfszCQoIlhp/XG+dV3JXg8Yibl4e8ANvI0CgF2Ftar2OCf0JUb83E";
+/// Production key, generated passwordless with `minisign -G -W` (its secret half
+/// lives only in the `MINISIGN_SECKEY` GitHub Actions secret). To rotate:
+/// generate a new keypair, update `MINISIGN_SECKEY`, and ship a normal signed
+/// release with the new value here — clients on the old binary keep verifying
+/// against the old key until they upgrade.
+const RELEASE_PUBKEY: &str = "RWQvvXyHZKQ0v5iV/R3Vb+kNbG+dz2Ttu+OWJ493mIhtaXRequka1FhR";
 
 /// Verify a minisign `signature` over `data` against `pubkey_b64` (the bare
 /// base64 line from a minisign `.pub` file). Returns an error if the key or
