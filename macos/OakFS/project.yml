@@ -1,0 +1,64 @@
+# XcodeGen spec for the Oak Mounter host app + OakFS FSKit extension.
+#
+# We keep the Xcode project as a text spec (not a binary .xcodeproj) so it
+# lives cleanly in version control. Generate the project with:
+#
+#     brew install xcodegen        # one-time
+#     cd macos/OakFS && xcodegen generate
+#     open OakFS.xcodeproj
+#
+# or just run `make macos-app` from the repo root, which does this and builds.
+#
+# Set DEVELOPMENT_TEAM (your Apple Team ID) below or via
+# `xcodegen generate --project-spec`-time env. Signing needs the
+# `com.apple.developer.fskit.fsmodule` entitlement granted to that team.
+
+name: OakFS
+options:
+  bundleIdPrefix: com.oak.mount
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: "" # ← your Apple Team ID
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  OakMounter:
+    type: application
+    platform: macOS
+    sources:
+      - path: HostApp
+    info:
+      path: HostApp/Info.plist
+    entitlements:
+      path: HostApp/HostApp.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.oak.mount.OakFS
+        PRODUCT_NAME: "Oak Mounter"
+    dependencies:
+      - target: OakFSExtension
+        embed: true # embed the .appex into the app's Contents/Extensions
+
+  OakFSExtension:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Extension
+    info:
+      path: Extension/Info.plist
+    entitlements:
+      path: Extension/OakFS.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.oak.mount.OakFS.Extension
+        PRODUCT_MODULE_NAME: OakFSExtension
+        # FSKit is a system framework on macOS 26+.
+    dependencies:
+      - sdk: FSKit.framework

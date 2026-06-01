@@ -75,25 +75,23 @@ gix = { workspace = true, features = ["max-performance-safe"] }
 # Virtual filesystem for `oak mount`. Off by default; build with
 # `--features mount`.
 #
-# Three backends, picked at compile time per target:
-#   - macOS   → fuser WITH the default `libfuse` feature. macOS has no
-#               fusermount helper, so mounting must go through libfuse
-#               (macFUSE: `brew install pkgconf macfuse`, or fuse-t). This
-#               links libfuse.2.dylib as a hard load-time dependency, which
-#               is why `--features mount` is never baked into the default
-#               distributed mac binary — only explicit local/dev builds.
-#   - Linux   → fuser WITHOUT libfuse (default-features = false). fuser then
-#               mounts by exec'ing the `fusermount3` setuid helper at runtime
-#               (from the `fuse3` package) instead of linking libfuse. Two
-#               payoffs: (1) the linux-x86_64 binary cross-compiles from
-#               macOS via cargo-zigbuild with no Linux libfuse to link
-#               against, and (2) no hard libfuse .so dependency on the
-#               shipped binary. Runtime needs `fuse3` installed + /dev/fuse.
+# Three backends, picked at compile time per target — all over the shared,
+# backend-neutral `MountCore` (cli/src/commands/mount/core.rs):
+#   - macOS   → Apple FSKit. The filesystem runs in the OS-loaded `OakFS`
+#               extension (Swift, macos/OakFS/); this CLI is the daemon that
+#               serves its VFS ops. NO kernel extension — no macFUSE/fuse-t,
+#               no libfuse linked. Needs macOS 26+ (synthetic FSPathURLResource)
+#               and the signed `Oak Mounter` app installed + enabled. The
+#               extension build is a separate Xcode/xcodebuild step.
+#   - Linux   → fuser WITHOUT libfuse (default-features = false). fuser mounts
+#               by exec'ing the `fusermount3` setuid helper at runtime (from
+#               the `fuse3` package) instead of linking libfuse. Two payoffs:
+#               (1) the linux-x86_64 binary cross-compiles from macOS via
+#               cargo-zigbuild with no Linux libfuse to link against, and
+#               (2) no hard libfuse .so dependency on the shipped binary.
+#               Runtime needs `fuse3` installed + /dev/fuse.
 #   - Windows → windows crate's ProjFS bindings (needs the Windows
 #               "Projected File System" optional feature enabled — see README).
-[target.'cfg(target_os = "macos")'.dependencies]
-fuser = { version = "0.15", optional = true }
-
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { version = "0.15", optional = true, default-features = false }
 

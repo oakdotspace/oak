@@ -63,7 +63,7 @@ NOTARY_PROFILE ?= oak-notary
 # Release version, e.g. v0.94.0 — derived from the workspace package version.
 VERSION ?= v$(shell awk '/^\[workspace.package\]/{f=1} f&&/^version *=/{gsub(/[" ]/,"");split($$0,a,"=");print a[2];exit}' Cargo.toml)
 
-.PHONY: build install test fmt lint check ci \
+.PHONY: build install test fmt lint check ci macos-app \
         build-release-all build-release-macos build-release-linux \
         build-release-linux-mount sign-release notarize-mac \
         upload-release release-all
@@ -75,8 +75,9 @@ VERSION ?= v$(shell awk '/^\[workspace.package\]/{f=1} f&&/^version *=/{gsub(/["
 build:
 	$(CARGO) build --release
 
-# Install the `oak` binary to ~/.cargo/bin. Enables the FUSE-backed
-# `oak mount` subcommand on macOS/Linux (the feature is a no-op elsewhere).
+# Install the `oak` binary to ~/.cargo/bin. Enables the `oak mount` subcommand
+# (FSKit on macOS, fuser on Linux; a no-op elsewhere). On macOS, mounting also
+# needs the OakFS extension installed — see `make macos-app`.
 install:
 ifeq ($(shell uname),Darwin)
 	$(CARGO) install --path cli --locked --features mount
@@ -88,6 +89,30 @@ endif
 
 test:
 	$(CARGO) test
+
+# Build (and optionally install) the macOS OakFS FSKit extension + host app.
+# This is what lets `oak mount` work on macOS with no kernel extension. Needs
+# Xcode 16+ with the macOS 26 SDK, `xcodegen`, and the
+# `com.apple.developer.fskit.fsmodule` entitlement granted to DEVELOPMENT_TEAM
+# (set it in macos/OakFS/project.yml). Run `make macos-app INSTALL=1` to also
+# copy "Oak Mounter.app" into /Applications.
+macos-app:
+	@if [ "$$(uname -s)" != "Darwin" ]; then echo "Error: macos-app only builds on macOS."; exit 1; fi
+	@command -v xcodegen >/dev/null || { echo "Error: xcodegen not found. Install with: brew install xcodegen"; exit 1; }
+	@command -v xcodebuild >/dev/null || { echo "Error: xcodebuild not found (install Xcode)."; exit 1; }
+	cd macos/OakFS && xcodegen generate
+	cd macos/OakFS && xcodebuild -project OakFS.xcodeproj -scheme OakMounter \
+		-configuration Release -derivedDataPath build
+	@if [ -n "$(INSTALL)" ]; then \
+		echo "Installing Oak Mounter.app to /Applications..."; \
+		rm -rf "/Applications/Oak Mounter.app"; \
+		cp -R "macos/OakFS/build/Build/Products/Release/Oak Mounter.app" /Applications/; \
+		echo "Installed. Open it and enable OakFS in System Settings → General →"; \
+		echo "Login Items & Extensions → File System Extensions."; \
+	else \
+		echo "Built macos/OakFS/build/Build/Products/Release/Oak Mounter.app"; \
+		echo "Re-run with INSTALL=1 to copy it to /Applications."; \
+	fi
 
 fmt:
 	$(CARGO) fmt --all

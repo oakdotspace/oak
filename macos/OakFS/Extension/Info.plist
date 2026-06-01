@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>OakFS</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.oak.mount.OakFS.Extension</string>
+    <key>CFBundlePackageType</key>
+    <string>XPC!</string>
+    <key>NSExtension</key>
+    <dict>
+        <!-- FSKit module extension point. fskitd loads this into its own
+             sandboxed process when an OakFS volume is mounted. -->
+        <key>NSExtensionPointIdentifier</key>
+        <string>com.apple.fskit.fsmodule</string>
+        <key>NSExtensionPrincipalClass</key>
+        <string>$(PRODUCT_MODULE_NAME).OakFSUnaryFileSystem</string>
+    </dict>
+    <key>FSShortName</key>
+    <string>OakFS</string>
+    <!-- Synthetic file system: mounts against an FSPathURLResource (a path
+         URL), not a block device. Requires macOS 26+. -->
+    <key>FSSupportsBlockResources</key>
+    <false/>
+    <key>FSSupportsPathURLResources</key>
+    <true/>
+</dict>
+</plist>

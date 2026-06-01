@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Required to ship an FSKit module. This entitlement must be granted to
+         your team by Apple (request via the Developer portal); the build will
+         fail to sign without it. -->
+    <key>com.apple.developer.fskit.fsmodule</key>
+    <true/>
+
+    <!-- FSKit extensions MUST be sandboxed.
+
+         DEVELOPMENT: set this to <false/> during bring-up so the extension can
+         open the daemon's unix socket directly (see DaemonClient.swift). With
+         the sandbox ON, the unix-socket transport is blocked and you must use
+         the XPC mach-service transport instead. -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- Production transport: allow connecting to the daemon's per-mount XPC
+         mach service. The daemon registers `com.oak.mount.<id>`; this wildcard
+         lets the extension reach any oak mount's service. -->
+    <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+    <array>
+        <string>com.oak.mount</string>
+    </array>
+</dict>
+</plist>

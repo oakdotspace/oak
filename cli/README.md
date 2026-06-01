@@ -60,9 +60,12 @@ feature, which selects a platform-native backend at compile time:
 cargo install --path . --features mount
 ```
 
-- **macOS** — FUSE via [macFUSE](https://macfuse.github.io)
-  (`brew install pkgconf macfuse`) or fuse-t. Links `libfuse`, which is why
-  `mount` is never baked into the default distributed mac binary.
+- **macOS** — [FSKit](https://developer.apple.com/documentation/fskit). **No
+  kernel extension** — no macFUSE, no `libfuse`. Requires macOS 26+ and the
+  signed **Oak Mounter** app (which carries the `OakFS` file-system extension)
+  installed and enabled once in System Settings → General → Login Items &
+  Extensions → File System Extensions. Build it with `make macos-app` (see
+  `macos/OakFS/README.md`).
 - **Linux** — FUSE via the `fusermount3` helper from the `fuse3` package
   (no `libfuse` link). Needs `/dev/fuse`.
 

@@ -13,11 +13,19 @@ use oak_core::{Repository, SqliteRepository};
 
 use crate::output;
 
-// Platform-specific virtual filesystem backends. Each provides a
-// `start_virtualizing` / `stop_virtualizing` pair that the shared `start()`
-// function dispatches into. Both wear the same overlay/state contract, so
-// the rest of the mount module is platform-neutral.
+// Backend-neutral mount engine. Owns the inode tree, overlay, blob hydration,
+// and reconciliation. Each platform backend below is a thin adapter over it.
 #[cfg(all(feature = "mount", any(target_os = "macos", target_os = "linux")))]
+pub mod core;
+
+// Platform-specific virtual filesystem backends, all over the same
+// `MountCore`, so the rest of this module is platform-neutral:
+//   - Linux   → fuser (`fusermount3` helper; no libfuse linked).
+//   - macOS   → FSKit extension + daemon IPC (no kernel extension).
+//   - Windows → ProjFS.
+#[cfg(all(feature = "mount", target_os = "macos"))]
+pub mod fskit;
+#[cfg(all(feature = "mount", target_os = "linux"))]
 pub mod fuse_fs;
 #[cfg(all(feature = "mount", target_os = "windows"))]
 pub mod projfs_fs;
@@ -619,24 +627,27 @@ pub async fn start(
     // virtual filesystem layer below — each backend takes the same prepared
     // state (cache, manifest, sizes, prefixes) and runs its own event loop
     // until the user signals shutdown.
+    // Both Unix backends build the same `MountCore` from the prepared state;
+    // only the OS virtualization layer differs.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        let rt_handle = tokio::runtime::Handle::current();
-        let mfs = fuse_fs::MountFs::new(
-            cfg.clone(),
-            cache,
-            &manifest,
-            &sizes,
-            token,
-            rt_handle,
-            state_dir.clone(),
-            &prefixes,
-            base_mtime,
-        )?;
+    let core = core::MountCore::new(
+        cfg.clone(),
+        cache,
+        &manifest,
+        &sizes,
+        token,
+        tokio::runtime::Handle::current(),
+        state_dir.clone(),
+        &prefixes,
+        base_mtime,
+    )?;
 
-        // `mount2` blocks the caller's thread; spawn it on a blocking task so
-        // the tokio runtime can keep servicing async fetches inside the FUSE
-        // callbacks.
+    #[cfg(target_os = "linux")]
+    {
+        // fuser's `mount2` blocks the caller's thread; spawn it on a blocking
+        // task so the tokio runtime can keep servicing async fetches inside
+        // the FUSE callbacks.
+        let mfs = fuse_fs::MountFs::new(core);
         let dest_owned = dest.to_path_buf();
         let mount_result = tokio::task::spawn_blocking(move || fuse_fs::mount_fs(&dest_owned, mfs))
             .await
@@ -649,6 +660,27 @@ pub async fn start(
             // prevent re-mounting.
             let _ = unregister_mount(dest);
             return Err(e);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // FSKit runs the filesystem in the OS-loaded `OakFS` extension; this
+        // daemon serves its requests over IPC. `start()` mounts the volume and
+        // returns immediately (like ProjFS), so we park on Ctrl-C, then unmount.
+        let fmount = match fskit::FskitMount::start(core, dest, &state_dir) {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = unregister_mount(dest);
+                return Err(e);
+            }
+        };
+
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            output::warning(&format!("ctrl-c handler failed: {e}"));
+        }
+        if let Err(e) = fmount.stop() {
+            output::warning(&format!("unmounting OakFS failed: {e}"));
         }
     }
 
