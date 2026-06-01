@@ -1200,9 +1200,7 @@ fn print_help() {
     let version = env!("CARGO_PKG_VERSION");
 
     // Banner + the public tagline, verbatim, in brand green.
-    println!(
-        "{BRIGHT_GREEN}{BOLD}↟ Oak{RESET} Branch freely. {DIM}(v{version}){RESET}\n"
-    );
+    println!("{BRIGHT_GREEN}{BOLD}↟ Oak{RESET} Branch freely. {DIM}(v{version}){RESET}\n");
     println!(
         "{WHITE}{BOLD}Usage:{RESET} oak {DIM}[--verbose]{RESET} <command> {DIM}[flags] [args]{RESET}\n"
     );

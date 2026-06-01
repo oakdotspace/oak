@@ -28,6 +28,11 @@ use super::state::{self, DirtyEntry, MountConfig, OverlayMeta};
 const TTL: Duration = Duration::from_secs(1);
 const ROOT_INODE: u64 = 1;
 
+/// Max concurrent off-thread blob hydrations in the `read` path. Bounds remote
+/// pressure during directory-wide read storms (one HTTP fetch per cache-missed
+/// file) while staying wide enough to keep the FUSE dispatch loop fed.
+const MAX_CONCURRENT_FETCHES: usize = 8;
+
 /// A cheap fingerprint of `overlay-meta.json` on disk. The FUSE server is a
 /// long-running process, but `oak commit` / `oak status` / `oak push` each run
 /// as *separate* processes that mutate the same mount state. After an
@@ -116,6 +121,11 @@ pub struct MountFs {
     /// vim think the file changed between open and write, triggering the
     /// "WARNING: file has changed since reading it" prompt.
     base_mtime: SystemTime,
+    /// Caps concurrent blob hydrations (see `read`). Off-thread fetches keep
+    /// the single FUSE dispatch loop responsive, but unbounded fan-out under a
+    /// read storm would hit the remote with one request per file at once; this
+    /// bounds it.
+    fetch_sem: Arc<tokio::sync::Semaphore>,
 }
 
 struct Inner {
@@ -259,6 +269,7 @@ impl MountFs {
             state_dir,
             cache,
             base_mtime,
+            fetch_sem: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_FETCHES)),
         })
     }
 
@@ -400,6 +411,31 @@ fn file_attr(ino: u64, size: u64, mode: FileMode, mtime: SystemTime) -> FileAttr
     }
 }
 
+/// Where a `read` gets its bytes. Resolved synchronously on the FUSE dispatch
+/// thread; only `Fetch` needs the network and is hydrated off-thread so it
+/// never stalls the single-threaded dispatch loop.
+enum ReadSource {
+    /// The inode is a directory (read should return EISDIR).
+    Dir,
+    /// Content available locally (overlay hit, cache hit, or empty new file).
+    Ready(Vec<u8>),
+    /// Cache miss with a base blob — fetch this hash from the remote.
+    Fetch(Hash),
+}
+
+/// Reply to a `read` with the `[offset, offset + size)` slice of `content`.
+/// Free function (not a method) so it can be called from a spawned task that
+/// doesn't hold a `&MountFs`.
+fn reply_slice(reply: ReplyData, content: &[u8], offset: i64, size: u32) {
+    let start = offset.max(0) as usize;
+    if start >= content.len() {
+        reply.data(&[]);
+        return;
+    }
+    let end = (start + size as usize).min(content.len());
+    reply.data(&content[start..end]);
+}
+
 impl MountFs {
     /// Read the full content for an inode (overlay → cache → remote).
     /// Returns None for directories.
@@ -460,6 +496,45 @@ impl MountFs {
             .get_blob(hash)?
             .ok_or_else(|| OakError::Server(format!("blob {} unavailable after fetch", hash)))?;
         Ok(blob.content)
+    }
+
+    /// Resolve where a `read` should get its bytes WITHOUT touching the
+    /// network. Overlay and cache hits return `Ready`; a cache miss with a
+    /// base blob returns `Fetch(hash)` for the caller to hydrate off the FUSE
+    /// dispatch thread. Mirrors `read_full`'s overlay → cache → remote order,
+    /// but stops short of the blocking remote fetch.
+    fn read_source(&self, ino: u64) -> std::io::Result<ReadSource> {
+        let (path, base_blob) = {
+            let inner = self.inner.lock().unwrap();
+            let node = inner
+                .nodes
+                .get(&ino)
+                .ok_or_else(|| std::io::Error::from_raw_os_error(libc::ENOENT))?;
+            match &node.kind {
+                NodeKind::Directory => return Ok(ReadSource::Dir),
+                NodeKind::File { base_blob, .. } => (node.path.clone(), base_blob.clone()),
+            }
+        };
+
+        // 1. Overlay (writes made this session).
+        let overlay_name = state::overlay_filename_for(&path);
+        let overlay_path = self.overlay_dir.join(&overlay_name);
+        if overlay_path.exists() {
+            return std::fs::read(&overlay_path).map(ReadSource::Ready);
+        }
+
+        // No base blob and no overlay → empty new file.
+        let Some(blob_hash) = base_blob else {
+            return Ok(ReadSource::Ready(Vec::new()));
+        };
+
+        // 2. Local cache hit → ready immediately, no network.
+        if let Some(blob) = self.cache.get_blob(&blob_hash).map_err(io_err)? {
+            return Ok(ReadSource::Ready(blob.content));
+        }
+
+        // 3. Cache miss → must hit the remote; defer to an off-thread fetch.
+        Ok(ReadSource::Fetch(blob_hash))
     }
 
     /// Materialize a file into the overlay if it isn't already there. The
@@ -789,20 +864,73 @@ impl Filesystem for MountFs {
         reply: ReplyData,
     ) {
         self.reconcile_if_external_change();
-        match self.read_full(ino) {
-            Ok(Some(content)) => {
-                let start = offset.max(0) as usize;
-                if start >= content.len() {
-                    reply.data(&[]);
-                    return;
-                }
-                let end = (start + size as usize).min(content.len());
-                reply.data(&content[start..end]);
-            }
-            Ok(None) => reply.error(libc::EISDIR),
+
+        // Resolve the source synchronously — this only touches the in-memory
+        // node table, the overlay dir, and the local SQLite cache, all fast.
+        let source = match self.read_source(ino) {
+            Ok(s) => s,
             Err(e) => {
                 tracing::warn!(?e, ino, "mount read failed");
                 reply.error(libc::EIO);
+                return;
+            }
+        };
+
+        match source {
+            ReadSource::Dir => reply.error(libc::EISDIR),
+            ReadSource::Ready(content) => reply_slice(reply, &content, offset, size),
+            ReadSource::Fetch(hash) => {
+                // Cache miss: hydrate from the remote WITHOUT blocking the
+                // single FUSE dispatch thread. fuser services requests one at a
+                // time on one thread, so a synchronous `block_on` here stalls
+                // every other request (lookups, reads of already-cached files)
+                // behind this one network round-trip — and once a request goes
+                // unanswered past macFUSE's daemon_timeout the kernel force-
+                // unmounts the whole volume. Spawning the fetch onto the
+                // (multi-threaded) runtime frees the dispatch loop immediately;
+                // `ReplyData` is `Send`, so we answer from the completion.
+                let cache = self.cache.clone();
+                let remote = self.cfg.remote_url.clone();
+                let owner = self.cfg.owner.clone();
+                let repo = self.cfg.repo.clone();
+                let token = self.token.clone();
+                let sem = self.fetch_sem.clone();
+                self.rt.spawn(async move {
+                    // Bound concurrent hydrations so a read storm doesn't fan
+                    // out one HTTP fetch per file simultaneously. The permit is
+                    // held for the duration of the fetch. acquire_owned only
+                    // errors if the semaphore is closed, which never happens
+                    // (it lives as long as the mount), so treat that as EIO.
+                    let _permit = match sem.acquire_owned().await {
+                        Ok(p) => p,
+                        Err(_) => {
+                            reply.error(libc::EIO);
+                            return;
+                        }
+                    };
+                    let fetched = async {
+                        super::super::blob_fetch::ensure_blobs_local(
+                            cache.as_ref(),
+                            &remote,
+                            &owner,
+                            &repo,
+                            token.as_deref(),
+                            std::slice::from_ref(&hash),
+                        )
+                        .await?;
+                        cache.get_blob(&hash)?.ok_or_else(|| {
+                            OakError::Server(format!("blob {} unavailable after fetch", hash))
+                        })
+                    }
+                    .await;
+                    match fetched {
+                        Ok(blob) => reply_slice(reply, &blob.content, offset, size),
+                        Err(e) => {
+                            tracing::warn!(?e, ino, "mount read fetch failed");
+                            reply.error(libc::EIO);
+                        }
+                    }
+                });
             }
         }
     }
@@ -1270,6 +1398,15 @@ pub fn mount_fs(mount_point: &Path, fs: MountFs) -> Result<()> {
     {
         opts.push(fuser::MountOption::CUSTOM("noappledouble".into()));
         opts.push(fuser::MountOption::CUSTOM("noapplexattr".into()));
+        // macFUSE force-unmounts the whole volume if a single FS operation
+        // goes unanswered for `daemon_timeout` seconds (default 60). When that
+        // fires, `mount2` returns and the daemon exits "cleanly" (prints
+        // "Unmounted.") — but the mount is gone and every later access gets
+        // ENXIO. The `read` path no longer blocks the dispatch thread (see
+        // `MountFs::read`), but the write/materialize path can still hydrate a
+        // base blob synchronously, so give every operation a generous ceiling
+        // (600s, macFUSE's documented max) instead of the stock 60s.
+        opts.push(fuser::MountOption::CUSTOM("daemon_timeout=600".into()));
     }
 
     fuser::mount2(fs, mount_point, &opts).map_err(OakError::Io)
