@@ -1,0 +1,238 @@
+name: Build OakFS app
+
+# Reusable Developer-ID-signed, profile-embedded build of the macOS "Oak
+# Mounter" host app + OakFS FSKit extension (matching `make macos-app`). The
+# OakFS extension needs the restricted com.apple.developer.fskit.fsmodule
+# entitlement, which must come from real provisioning profiles — CLI/automatic
+# signing strips it.
+#
+# Self-skips (produces no artifact, sets the `built` output to "false") when the
+# signing secrets aren't configured, so a caller that runs unconditionally
+# (e.g. canary on every push) degrades to "no app this run" rather than failing.
+# Callers gate their release-asset upload on the `built` output.
+#
+# Signed-build secrets (inherited from the caller):
+#   MACOS_CERT_P12_BASE64, MACOS_CERT_PASSWORD, MACOS_KEYCHAIN_PASSWORD
+#   MACOS_HOST_PROFILE_BASE64       — base64 of the "Mount Profile" .provisionprofile
+#   MACOS_EXT_PROFILE_BASE64        — base64 of the "OakFSExtension" .provisionprofile
+#
+# Notarization secrets (optional — without them the app is signed but NOT
+# notarized, so downloaders still hit Gatekeeper). App Store Connect API key:
+#   MACOS_NOTARY_KEY_BASE64         — base64 of the .p8 App Store Connect API key
+#   MACOS_NOTARY_KEY_ID             — the key's ID
+#   MACOS_NOTARY_ISSUER_ID          — the issuer UUID
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: "Name of the uploaded .app-zip artifact"
+        required: false
+        type: string
+        default: oak-mounter-app
+    outputs:
+      built:
+        description: "'true' when a signed app artifact was produced"
+        value: ${{ jobs.app.outputs.built }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  app:
+    runs-on: macos-latest
+    outputs:
+      built: ${{ steps.gate.outputs.ready }}
+    env:
+      MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # FSKit and the macOS 26.0 deployment target need the macOS 26 SDK; pick the
+      # newest Xcode the runner has.
+      - name: Select latest Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Check signing secrets
+        id: gate
+        run: |
+          if [ -n "${MACOS_CERT_P12_BASE64:-}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Signing secrets not configured — skipping the signed OakFS app build."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Import the Developer ID Application cert into an ephemeral keychain so
+      # xcodebuild's "Developer ID Application" identity resolves.
+      - name: Import Developer ID certificate
+        if: ${{ steps.gate.outputs.ready == 'true' }}
+        env:
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/oak-signing.keychain-db"
+          CERT="$RUNNER_TEMP/cert.p12"
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$CERT"
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          rm -f "$CERT"
+
+      # The host app's "Mount Profile" and the extension's "OakFSExtension"
+      # profile (both carrying the restricted FSKit entitlement) must be present
+      # under ~/Library/MobileDevice/Provisioning Profiles for xcodebuild's
+      # Manual signing to find them by name.
+      - name: Install provisioning profiles
+        if: ${{ steps.gate.outputs.ready == 'true' }}
+        env:
+          MACOS_HOST_PROFILE_BASE64: ${{ secrets.MACOS_HOST_PROFILE_BASE64 }}
+          MACOS_EXT_PROFILE_BASE64: ${{ secrets.MACOS_EXT_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+
+          # The signed OakFS build needs BOTH profiles: the restricted FSKit
+          # entitlement (com.apple.developer.fskit.fsmodule) only comes from real
+          # provisioning profiles. Without them xcodebuild fails late with the
+          # cryptic "No profile for team ... matching 'Mount Profile'". The cert
+          # gate alone can't catch a half-configured repo (cert set, profiles
+          # not), so fail HERE with an actionable message instead.
+          missing=""
+          [ -n "${MACOS_HOST_PROFILE_BASE64:-}" ] || missing="$missing MACOS_HOST_PROFILE_BASE64"
+          [ -n "${MACOS_EXT_PROFILE_BASE64:-}" ]  || missing="$missing MACOS_EXT_PROFILE_BASE64"
+          if [ -n "$missing" ]; then
+            echo "::error::Signing cert is set but provisioning-profile secret(s) are missing:$missing. The OakFS FSKit extension can't be signed without them — add the secret(s) (base64 of each .provisionprofile), or unset MACOS_CERT_P12_BASE64 to skip the signed app entirely."
+            exit 1
+          fi
+
+          # Install into both locations Xcode may read (the classic path and the
+          # Xcode 16+ UserData path). Filenames are arbitrary — Xcode matches a
+          # profile by the Name embedded in it, not the filename.
+          for DEST in \
+            "$HOME/Library/MobileDevice/Provisioning Profiles" \
+            "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$DEST"
+            echo "$MACOS_HOST_PROFILE_BASE64" | base64 --decode > "$DEST/mount.provisionprofile"
+            echo "$MACOS_EXT_PROFILE_BASE64"  | base64 --decode > "$DEST/oakfsext.provisionprofile"
+          done
+
+          # Verify the installed profiles carry the Names project.yml's
+          # PROVISIONING_PROFILE_SPECIFIER expects, for the right team. The most
+          # common misconfiguration is a secret holding the WRONG profile (e.g.
+          # an auto-generated one whose Name isn't "Mount Profile") — that decodes
+          # fine but still won't match, so check it explicitly here.
+          # Match the actual YAML setting (indented `DEVELOPMENT_TEAM: "…"`),
+          # not the `# Set DEVELOPMENT_TEAM …` comment that precedes it — the
+          # comment has no quoted value, so sed would pass it through verbatim
+          # and the specifier check would compare against the comment text.
+          want_team=$(grep -m1 -E '^[[:space:]]*DEVELOPMENT_TEAM[[:space:]]*:' macos/OakFS/project.yml | sed -E 's/.*"([^"]+)".*/\1/')
+          DEST="$HOME/Library/MobileDevice/Provisioning Profiles"
+          found=""
+          for f in "$DEST/mount.provisionprofile" "$DEST/oakfsext.provisionprofile"; do
+            plist=$(security cms -D -i "$f")
+            name=$(printf '%s' "$plist" | plutil -extract Name raw -)
+            team=$(printf '%s' "$plist" | plutil -extract TeamIdentifier.0 raw -)
+            uuid=$(printf '%s' "$plist" | plutil -extract UUID raw -)
+            exp=$(printf '%s' "$plist" | plutil -extract ExpirationDate raw -)
+            echo "Installed $(basename "$f"): Name='$name' Team=$team UUID=$uuid Expires=$exp"
+            found="$found|$team/$name"
+          done
+          for spec in "$want_team/Mount Profile" "$want_team/OakFSExtension"; do
+            case "$found" in
+              *"$spec"*) ;;
+              *) echo "::error::No installed profile matches the project.yml specifier '$spec'. Decoded profiles were:$found. Re-export the correct '$spec' profile from the Apple Developer portal and update the matching secret." ; exit 1 ;;
+            esac
+          done
+          echo "Both provisioning profiles present and correctly named for team $want_team."
+
+      - name: Build signed app
+        if: ${{ steps.gate.outputs.ready == 'true' }}
+        run: make macos-app
+
+      - name: Verify signature
+        if: ${{ steps.gate.outputs.ready == 'true' }}
+        run: |
+          set -euo pipefail
+          APP="macos/OakFS/build/Build/Products/Release/Oak Mount.app"
+          codesign --verify --strict --deep --verbose=2 "$APP"
+          codesign --display --entitlements - "$APP/Contents/Extensions/OakFSExtension.appex"
+
+      # Notarize with Apple and staple the ticket onto the .app so the downloaded
+      # bundle passes Gatekeeper offline. Codesigning alone isn't enough — an
+      # un-notarized Developer-ID app still shows "Apple cannot check it for
+      # malicious software" on first launch. Requires the hardened runtime (set in
+      # project.yml). Uses an App Store Connect API key (.p8) passed via secrets.
+      #
+      # Degrades gracefully: if the notary secrets aren't configured we still ship
+      # the SIGNED-but-un-notarized app (with a warning) rather than failing, the
+      # same way the cert gate degrades to CLI-only. So this needs every notary
+      # secret set to actually notarize.
+      - name: Notarize and staple
+        if: ${{ steps.gate.outputs.ready == 'true' }}
+        env:
+          MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          APP="macos/OakFS/build/Build/Products/Release/Oak Mount.app"
+
+          missing=""
+          [ -n "${MACOS_NOTARY_KEY_BASE64:-}" ] || missing="$missing MACOS_NOTARY_KEY_BASE64"
+          [ -n "${MACOS_NOTARY_KEY_ID:-}" ]     || missing="$missing MACOS_NOTARY_KEY_ID"
+          [ -n "${MACOS_NOTARY_ISSUER_ID:-}" ]  || missing="$missing MACOS_NOTARY_ISSUER_ID"
+          if [ -n "$missing" ]; then
+            echo "::warning::Notary secrets not configured ($missing) — shipping the signed but UN-NOTARIZED app. Downloaders will hit Gatekeeper's 'Apple cannot check it' prompt. Add the App Store Connect API key secrets to notarize."
+            exit 0
+          fi
+
+          KEY="$RUNNER_TEMP/notary-key.p8"
+          echo "$MACOS_NOTARY_KEY_BASE64" | base64 --decode > "$KEY"
+
+          # notarytool wants a zip/dmg/pkg, not a raw .app bundle.
+          SUBMIT_ZIP="$RUNNER_TEMP/OakMounter-notarize.zip"
+          ditto -c -k --keepParent "$APP" "$SUBMIT_ZIP"
+
+          CREDS=(--key "$KEY" --key-id "$MACOS_NOTARY_KEY_ID" --issuer "$MACOS_NOTARY_ISSUER_ID")
+
+          echo "Submitting to Apple notary service (this can take a few minutes)..."
+          # Capture the submission id so we can dump the per-file log on failure.
+          # `--wait` returns non-zero unless the result is Accepted, but the bare
+          # exit code doesn't say WHY — the log does. Don't let `set -e` abort
+          # before we've fetched it.
+          SUBMIT_JSON=$(xcrun notarytool submit "$SUBMIT_ZIP" "${CREDS[@]}" --wait --output-format json) && rc=0 || rc=$?
+          echo "$SUBMIT_JSON"
+          SUBMISSION_ID=$(printf '%s' "$SUBMIT_JSON" | plutil -extract id raw - 2>/dev/null || true)
+          STATUS=$(printf '%s' "$SUBMIT_JSON" | plutil -extract status raw - 2>/dev/null || true)
+
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Notarization failed (status='$STATUS'). Per-file reasons below:"
+            [ -n "$SUBMISSION_ID" ] && xcrun notarytool log "$SUBMISSION_ID" "${CREDS[@]}" || true
+            rm -f "$KEY" "$SUBMIT_ZIP"
+            exit "${rc:-1}"
+          fi
+
+          # Staple the ticket onto the bundle so it validates offline. The
+          # subsequent "Zip the app" step packages this stapled .app.
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+          rm -f "$KEY" "$SUBMIT_ZIP"
+          echo "Notarized and stapled."
+
+      - name: Zip the app
+        if: ${{ steps.gate.outputs.ready == 'true' }}
+        working-directory: macos/OakFS/build/Build/Products/Release
+        run: ditto -c -k --keepParent "Oak Mount.app" "$RUNNER_TEMP/OakMount.zip"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ steps.gate.outputs.ready == 'true' }}
+        with:
+          name: ${{ inputs.artifact-name }}
+          if-no-files-found: error
+          path: ${{ runner.temp }}/OakMount.zip

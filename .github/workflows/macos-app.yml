@@ -1,0 +1,70 @@
+name: macOS App (OakFS)
+
+# Build the macOS "Oak Mount" host app + OakFS FSKit extension.
+#
+# Two jobs:
+#   verify  — always-on compile check (PRs / pushes touching macos/**). Builds
+#             with code signing DISABLED, so it needs no certificate or
+#             provisioning profiles and runs on a vanilla runner. This catches
+#             Swift/xcodegen/project.yml breakage without any secrets.
+#   signed  — full Developer-ID-signed, profile-embedded build via the reusable
+#             _build-macos-app workflow (the same one release.yml and canary.yml
+#             use). Manual dispatch only; uploads "Oak Mount.app" as a run
+#             artifact. Self-skips if the signing secrets aren't configured.
+#
+# Requirements: a runner whose Xcode ships the macOS 26 SDK (FSKit + the
+# macOS 26.0 deployment target in macos/OakFS/project.yml) and `xcodegen`.
+
+on:
+  push:
+    branches: [oak]
+    paths:
+      - "macos/**"
+      - ".github/workflows/macos-app.yml"
+      - ".github/workflows/_build-macos-app.yml"
+  pull_request:
+    paths:
+      - "macos/**"
+      - ".github/workflows/macos-app.yml"
+      - ".github/workflows/_build-macos-app.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Compile-only verification: no signing, no secrets, no provisioning profiles.
+  verify:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # FSKit and the macOS 26.0 deployment target need the macOS 26 SDK; pick the
+      # newest Xcode the runner has.
+      - name: Select latest Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: macos/OakFS
+        run: xcodegen generate
+
+      # CODE_SIGNING_ALLOWED=NO overrides project.yml's Manual/Developer-ID
+      # settings so the app compiles without a cert or the FSKit provisioning
+      # profiles. This only proves it builds — the result is not loadable.
+      - name: Build (unsigned, verification only)
+        working-directory: macos/OakFS
+        run: |
+          set -euo pipefail
+          xcodebuild -project OakFS.xcodeproj -scheme OakMounter \
+            -configuration Release -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" PROVISIONING_PROFILE_SPECIFIER=""
+
+  # Full signed build — manual-only, self-skips unless the cert secret is set.
+  signed:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/_build-macos-app.yml
+    secrets: inherit

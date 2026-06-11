@@ -1,0 +1,162 @@
+# Oak space — org {{org}}
+
+This directory is an **Oak space** for the `{{org}}` org. It is not a
+checkout. A space spans the **whole org**, not a single repo: each task
+gets its own subdirectory, and inside it you `oak mount` whichever of
+`{{org}}`'s repos the task touches — a lazy, FUSE-backed view per repo,
+each on its own virtual branch. **One subdirectory = one concurrent
+task** (which may span several repos). Spaces are like git worktrees,
+but without a full clone behind each one: mounts hydrate file content on
+demand, so spinning up a fresh task is near-instant and cheap.
+
+Because a space covers the org, cross-repo changes live side by side and
+you can pull in any repo for extra context when a task needs it.
+
+This file ships with `oak space new {{org}}` and is meant to be read by
+the coding agent (Claude Code, Cursor, Codex, etc.) opened here.
+
+## Starting a new task
+
+When the user asks you to start work on a new task:
+
+1. **Pick a slug.** 2–4 word kebab-case identifier
+   (e.g. `fix-auth-redirect`, `add-search-index`). Confirm with the
+   user if ambiguous.
+
+2. **Decide which repo(s) the task needs.** List the org's repos:
+   ```
+   oak space repos
+   ```
+   This calls the API and prints every repo in `{{org}}` you can see
+   (e.g. `{{org}}/web`, `{{org}}/api`). Pick the one the change belongs
+   in — or several, for a cross-repo change. If it's unclear which repo
+   owns the work, ask the user or mount a likely candidate read-only to
+   look around.
+
+3. **Start a mount per repo, under the task directory.**
+   ```
+   oak mount {{org}}/<repo> ./<slug>/<repo>
+   ```
+   Run this once for each repo the task needs. So a single-repo task on
+   `web` becomes `./<slug>/web/`, and a cross-repo task gets
+   `./<slug>/web/` and `./<slug>/api/` side by side. Each mount creates a
+   new virtual branch named `<repo>--<id8>` off that repo's default
+   branch and runs as a detached background daemon — the command returns
+   as soon as the mount is live. Mount-aware commands (`oak status`,
+   `oak commit`, etc., run from inside a repo's mount) pick up the
+   virtual branch automatically.
+
+4. **Read each repo's own AGENTS.md.** Agents walk up from cwd to find
+   their instructions file, but cwd stays at the space root — so a
+   repo's instructions won't auto-load. Read `./<slug>/<repo>/AGENTS.md`
+   explicitly if it exists, for every repo you mounted.
+
+So a space for `{{org}}` might hold:
+
+```
+{{org}}/                  # the space (created by `oak space new {{org}}`)
+├── AGENTS.md             # this file
+├── CLAUDE.md             # one-line `@AGENTS.md` import (for Claude Code)
+├── .oak-space            # marker recording the org ({{org}})
+├── .claude/
+│   └── settings.json     # space settings (Stop hook + permissions)
+├── add-search/           # task 1 — touches one repo
+│   └── api/              # mount of {{org}}/api
+└── unify-error-format/   # task 2 — cross-repo change
+    ├── api/              # mount of {{org}}/api
+    └── web/              # mount of {{org}}/web
+```
+
+## Working on a task
+
+- All edits go under `./<slug>/<repo>/`. Never write to the space root,
+  to the task directory itself (only its repo subdirs are mounts), or to
+  a sibling task's directory.
+- `oak status`, `oak diff`, `oak log`, `oak commit`, `oak push` all
+  work when run from inside a repo's mount
+  (`cd ./<slug>/<repo> && oak status`). They route through that mount and
+  operate on its virtual branch.
+- **`oak commit` takes no message.** It accepts no `-m` flag — branch
+  descriptions are the source of truth for "what happened," not
+  per-commit messages. Just `oak commit`.
+- The overlay (uncommitted changes) is the **active commit**. Run
+  `oak commit` inside a mount to finalize a commit; the next edit starts
+  a new active commit on top.
+- Each repo's mount is independent — commit, push, and describe them
+  separately, even within one cross-repo task.
+
+## At the end of every prompt — finalize automatically
+
+When you finish responding to a prompt, **always** wrap up the task on
+your own — no "should I commit?" check-in first. For **each repo you
+touched**, from inside that repo's mount, in order:
+
+1. `cd ./<slug>/<repo> && oak commit` — finalize the active commit.
+   (Skip a repo only if `oak status` shows nothing changed there.)
+2. `cd ./<slug>/<repo> && oak push` — send the virtual branch to the
+   server.
+3. `cd ./<slug>/<repo> && oak desc "<summary>"` — set the squash-merge
+   message on the now-pushed branch. (This pushes a metadata-only
+   update.)
+
+Then, once every repo in the task is pushed:
+
+4. `oak mount end ./<slug>/<repo>` for each mount — tear them down (run
+   from the space root). Pushing already sent the branches to the
+   server, so ending a mount only drops the local FUSE view — your work
+   is safe. (`oak space clean ./<slug>` does this for the whole task at
+   once.)
+5. Report the branch name(s) and push result for each repo back to the
+   user.
+
+Run all of this every time, unattended. The branches are pushed and the
+mounts are gone by the time you hand the turn back.
+
+## Follow-ups — remount
+
+If the user follows up after you've torn the mounts down, just bring up
+fresh mounts and keep going:
+
+```
+oak mount {{org}}/<repo> ./<slug>/<repo>
+```
+
+Reuse the same `<slug>` (and repo subdir names) so the branches stay
+recognizable, then pick up where you left off and finalize again at the
+end (commit → push → desc → `oak mount end`) as above.
+
+A remount always branches off the repo's trunk — Oak's flat model
+forbids mounting any other branch — so it starts from the latest trunk,
+**not** from the branch you just pushed. If the follow-up needs to build
+on that pushed work, merge it into the trunk first (or have the user
+merge it), then remount.
+
+To abandon a repo without pushing: `oak mount end --force ./<slug>/<repo>`
+— `--force` discards any uncommitted overlay.
+
+## Cleaning up
+
+`oak space clean` tears down every mount in this space whose work is
+fully saved — no uncommitted overlay and no unpushed commits — i.e.
+tasks you've already committed and pushed/merged, across all their
+repos. Mounts with in-flight work are left untouched so you don't lose
+it; pass `--force` to discard and remove those too. Run it from the
+space root, or `oak space clean <path>` to clean one task.
+
+## Knowing what's in flight
+
+- `oak mount list` shows every active mount on the machine with its
+  virtual branch name. Run it when you're unsure what tasks/repos are
+  mounted or before ending a session.
+- `oak space repos` re-lists the org's repos whenever you need to find
+  another one to mount.
+
+## Branch descriptions
+
+`oak desc "<summary>"` works inside a mount: it writes the description
+onto the virtual branch and sends a metadata-only push so the server
+picks it up immediately. The branch description becomes the squash-merge
+commit message when the branch is merged into the repo's trunk, so it's
+worth writing a real summary rather than relying on the slug fallback.
+For a cross-repo task, give each repo's branch a description scoped to
+what changed in that repo.
