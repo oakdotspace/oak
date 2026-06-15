@@ -1,0 +1,119 @@
+name: Canary
+
+# Rolling "latest" build of the `oak` CLI + signed OakFS app, published to a
+# single pre-release whose `canary` tag is force-moved to the tip of `oak` on
+# every push. Opt in with `oak upgrade --canary`.
+#
+# Why a pre-release: GitHub's /releases/latest redirect — which `oak upgrade`
+# (no flag) and the daily version check follow — skips pre-releases. So this
+# channel is invisible to stable users; only `--canary` addresses the tag
+# directly (see cli/src/commands/upgrade.rs, CANARY_TAG).
+#
+# Jobs reuse the same builders as the stable release:
+#   cli     — the four CLI binaries (reusable _build-cli)
+#   app     — the signed OakFS app .zip (reusable _build-macos-app)
+#   publish — minisign the binaries, then recreate the rolling `canary`
+#             pre-release at this commit with all assets
+#
+# Uses the same secrets as release.yml (inherited). The app job self-skips when
+# the macOS signing/profile secrets are absent, so canary degrades to CLI-only
+# rather than failing every push.
+
+on:
+  push:
+    branches: [oak]
+  workflow_dispatch:
+
+# One canary build at a time; a newer push supersedes an in-flight one so the
+# tag always lands on the most recent commit.
+concurrency:
+  group: canary
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cli:
+    uses: ./.github/workflows/_build-cli.yml
+    secrets: inherit
+
+  app:
+    uses: ./.github/workflows/_build-macos-app.yml
+    with:
+      artifact-name: oak-mounter-app
+    secrets: inherit
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [cli, app]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Collect built binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: target/releases
+          merge-multiple: true
+
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
+      # `oak upgrade --canary` fails closed on an unsigned binary exactly like
+      # the stable path — the canary channel is still signed against the same
+      # RELEASE_PUBKEY.
+      - name: Sign binaries (minisign)
+        env:
+          MINISIGN_SECKEY_CONTENTS: ${{ secrets.MINISIGN_SECKEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECKEY_CONTENTS:-}" ]; then
+            echo "::error::MINISIGN_SECKEY secret is not set — canary binaries must be signed (oak upgrade --canary fails closed on unsigned binaries)."
+            exit 1
+          fi
+          KEY="$RUNNER_TEMP/release.key"
+          printf '%s\n' "$MINISIGN_SECKEY_CONTENTS" > "$KEY"
+          make sign-release MINISIGN_SECKEY="$KEY" MINISIGN_PASSWORD="${MINISIGN_PASSWORD:-}"
+          rm -f "$KEY"
+
+      - name: Generate SHA256SUMS
+        working-directory: target/releases
+        run: shasum -a 256 oak-darwin-arm64 oak-darwin-x86_64 oak-linux-x86_64 oak-linux-arm64 > SHA256SUMS
+
+      # Recreate the rolling pre-release so its `canary` tag points at THIS
+      # commit. `gh release delete --cleanup-tag` removes the old release and its
+      # tag (|| true: nothing to delete on the very first run); `gh release
+      # create --target $GITHUB_SHA` re-creates the tag here. --prerelease keeps
+      # it out of /releases/latest; never pass --latest.
+      - name: Publish rolling canary pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          APP_BUILT: ${{ needs.app.outputs.built }}
+        run: |
+          set -euo pipefail
+          SHORT="${GITHUB_SHA:0:7}"
+          cd target/releases
+          ASSETS=(
+            oak-darwin-arm64 oak-darwin-x86_64 oak-linux-x86_64 oak-linux-arm64
+            oak-darwin-arm64.minisig oak-darwin-x86_64.minisig
+            oak-linux-x86_64.minisig oak-linux-arm64.minisig
+            SHA256SUMS
+          )
+          if [ "${APP_BUILT:-false}" = "true" ] && [ -f OakMount.zip ]; then
+            ASSETS+=(OakMount.zip)
+          else
+            echo "::warning::OakFS app not attached to canary (app build was skipped — check macOS signing/profile secrets)."
+          fi
+          gh release delete canary --yes --cleanup-tag || true
+          gh release create canary \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Canary ($SHORT)" \
+            --notes "Rolling pre-release built from the tip of \`oak\` (commit $SHORT). Install with \`oak upgrade --canary\`. Not a stable release." \
+            "${ASSETS[@]}"
+          echo "Published canary ($SHORT) to $GH_REPO."

@@ -1,0 +1,10 @@
+{
+  "name": "oak",
+  "version": "0.1.0",
+  "description": "How to use Oak version control (the `oak` CLI) instead of Git.",
+  "homepage": "https://oakvcs.com",
+  "author": {
+    "name": "Oak",
+    "url": "https://oakvcs.com"
+  }
+}
