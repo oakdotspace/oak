@@ -1,0 +1,18 @@
+{
+  "name": "oak",
+  "owner": {
+    "name": "Oak",
+    "url": "https://oakvcs.com"
+  },
+  "metadata": {
+    "description": "Skills that teach coding agents to use Oak version control instead of Git.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "oak",
+      "source": "./oak",
+      "description": "How to use Oak version control (the `oak` CLI) instead of Git — commands, the flat branch-per-task model, messageless commits, mounts, and Oak spaces."
+    }
+  ]
+}

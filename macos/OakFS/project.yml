@@ -1,0 +1,163 @@
+# XcodeGen spec for the Oak Mount host app + OakFS FSKit extension.
+#
+# We keep the Xcode project as a text spec (not a binary .xcodeproj) so it
+# lives cleanly in version control. Generate the project with:
+#
+#     brew install xcodegen        # one-time
+#     cd macos/OakFS && xcodegen generate
+#     open OakFS.xcodeproj
+#
+# or just run `make macos-app` from the repo root, which does this and builds.
+#
+# Set DEVELOPMENT_TEAM (your Apple Team ID) below or via
+# `xcodegen generate --project-spec`-time env. Signing needs the
+# `com.apple.developer.fskit.fsmodule` entitlement granted to that team.
+
+name: OakFS
+options:
+  bundleIdPrefix: com.oakvcs
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: "452XFR864N" # ← your Apple Team ID
+    # Manual signing with Developer ID + explicit provisioning profiles (set
+    # per-target below). Automatic/CLI signing strips the restricted
+    # com.apple.developer.fskit.fsmodule entitlement and embeds no profile, so
+    # the extension won't load — these settings match what works in the Xcode IDE.
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "Developer ID Application"
+    # Hardened runtime is a hard prerequisite for Apple notarization. Without it
+    # `notarytool submit` is accepted but the ticket comes back "Invalid", so the
+    # downloaded app still trips Gatekeeper. Harmless on the compile-only CI build
+    # (CODE_SIGNING_ALLOWED=NO skips codesign entirely, so the flag is never applied).
+    ENABLE_HARDENED_RUNTIME: YES
+    # Notarization rejects two things a plain `xcodebuild build` leaves on a
+    # Developer-ID binary when it's signed with a *development* provisioning
+    # profile:
+    #   1. No secure timestamp — codesign must contact Apple's timestamp server.
+    #      `xcodebuild build` doesn't pass --timestamp by default, so force it.
+    #   2. The com.apple.security.get-task-allow ("debugger may attach") base
+    #      entitlement, which Xcode injects for dev-profile builds. Turning off
+    #      base-entitlement injection strips it; the real entitlements (FSKit,
+    #      sandbox, mach-lookup) live in the explicit .entitlements files, so
+    #      nothing needed is lost.
+    OTHER_CODE_SIGN_FLAGS: "--timestamp"
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS: "NO"
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  OakMounter:
+    type: application
+    platform: macOS
+    sources:
+      - path: HostApp
+    info:
+      path: HostApp/Info.plist
+    entitlements:
+      path: HostApp/HostApp.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.oakvcs.mount
+        PRODUCT_NAME: "Oak Mount"
+        PROVISIONING_PROFILE_SPECIFIER: "Mount Profile"
+        # App icon lives in HostApp/Assets.xcassets (sizes generated from the
+        # oak-web favicon). actool compiles it and merges CFBundleIconName/
+        # CFBundleIconFile into the final Info.plist automatically.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    dependencies:
+      - target: OakFSExtension
+        embed: true # embed the .appex into the app's Contents/Extensions
+
+  OakFSExtension:
+    # FSKit modules are ExtensionKit extensions (EXAppExtensionAttributes), not
+    # legacy NSExtension app-extensions. This product type makes Xcode embed the
+    # .appex into the host app's Contents/Extensions/ (not Contents/PlugIns/) and
+    # apply the com.apple.developer.fskit.fsmodule provisioning profile — both
+    # required for macOS to discover and load it as a file system.
+    type: extensionkit-extension
+    platform: macOS
+    sources:
+      - path: Extension
+    info:
+      path: Extension/Info.plist
+      properties:
+        # Declares this app-extension as an FSKit file-system module. Without
+        # EXAppExtensionAttributes/EXExtensionPointIdentifier, macOS never treats
+        # it as a file system and it won't appear under File System Extensions.
+        #
+        # CRITICAL: every FSKit key (FSShortName, FSSupports*, FSActivateOptionSyntax,
+        # …) must live *inside* EXAppExtensionAttributes, NOT at the Info.plist top
+        # level. FSKit reads FSShortName from within this dict; if it's hoisted to
+        # the top level the module still registers with pluginkit (because
+        # EXExtensionPointIdentifier is found) but `installedExtensionWithShortName`
+        # matches nothing, so `/sbin/mount -t OakFS` fails with "Unable to invoke
+        # task" / "No extension with fsShortName found". Apple's PassthroughFS
+        # sample nests them all here — match that layout exactly.
+        EXAppExtensionAttributes:
+          EXExtensionPointIdentifier: com.apple.fskit.fsmodule
+          # FSActivateOptionSyntax declares the getopt syntax for the options that
+          # FSKit forwards to loadResource. `oak mount` passes the daemon socket and
+          # mount id via `-o oak_id=…,oak_socket=…` (see cli .../fskit/mod.rs); `o:`
+          # marks `-o` as taking an argument so those reach FSTaskOptions.taskOptions.
+          # Apple's PassthroughFS sample declares `u:g:m:o:`.
+          FSActivateOptionSyntax:
+            shortOptions: "o:"
+          # `oak mount` shells out to `/sbin/mount -F -t OakFS`; this is that name.
+          FSShortName: OakFS
+          # Synthetic (path-URL) volume, not a block device.
+          FSSupportsBlockResources: false
+          # oak mounts a synthetic FSPathURLResource (the mount state dir passed as
+          # the <resource> argument to `/sbin/mount -F`), not a /dev block device.
+          # FSKit only hands the extension a path-URL resource when this is set, so
+          # without it the mount is rejected. The PassthroughFS sample sets it too.
+          FSSupportsPathURLs: true
+          # The <resource> (mount state dir) is delivered to the sandboxed extension
+          # as a security-scoped URL; PassthroughFS requires this too.
+          FSRequiresSecurityScopedPathURLResources: true
+    entitlements:
+      path: Extension/OakFS.entitlements
+      # NOTE: xcodegen *manages* this file — every `xcodegen generate` (which
+      # `make macos-app` runs) overwrites it from these properties. So the
+      # entitlements must live here, not just in the .entitlements file, or they
+      # silently vanish on the next generate (which is why the restricted FSKit
+      # entitlement never shipped before).
+      properties:
+        # FSKit file-system modules must run in the App Sandbox, like Apple's
+        # PassthroughFS sample.
+        com.apple.security.app-sandbox: true
+        # The restricted entitlement that marks this app-extension as an FSKit
+        # file-system module. Must be granted to the team's provisioning profile.
+        com.apple.developer.fskit.fsmodule: true
+        # oak-specific (the passthrough sample has no equivalent because it does
+        # direct POSIX I/O): the sandboxed extension reaches the `oak` daemon via
+        # the launchd-vended `com.oakvcs.mount` XPC mach service. The sandbox
+        # blocks mach lookups by default, so the broker name needs an explicit
+        # exception — see DaemonClient.swift.
+        com.apple.security.temporary-exception.mach-lookup.global-name:
+          - com.oakvcs.mount
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.oakvcs.mount.Extension
+        PRODUCT_MODULE_NAME: OakFSExtension
+        PROVISIONING_PROFILE_SPECIFIER: "OakFSExtension"
+        # FSKit is a system framework on macOS 26+.
+    dependencies:
+      - sdk: FSKit.framework
+
+schemes:
+  # `make macos-app` builds `-scheme OakMounter`. xcodegen does not create
+  # schemes unless declared, so define one that builds the host app (which embeds
+  # the extension) and archives in Release.
+  OakMounter:
+    build:
+      targets:
+        OakMounter: all
+    run:
+      config: Debug
+    archive:
+      config: Release

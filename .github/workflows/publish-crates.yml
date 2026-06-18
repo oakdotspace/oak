@@ -1,0 +1,147 @@
+name: Publish to crates.io
+
+# Publish the library + CLI to crates.io: `oakvcs-core` then `oakvcs-cli`.
+#
+# This is SEPARATE from release.yml. release.yml ships signed *binaries* to
+# GitHub Releases (the channel `oak upgrade` resolves); this workflow ships the
+# *source crates* to crates.io (`cargo install oakvcs-cli`, and library
+# consumers like the server depending on `oakvcs-core`).
+#
+# Manually triggered (workflow_dispatch), mirroring release.yml: the version is
+# the source of truth in Cargo.toml ([workspace.package].version), and Oak —
+# not GitHub — remains the canonical VCS, so this workflow never writes commits
+# or tags back to the repo. Do the version bump in Oak first (bump
+# [workspace.package].version; the oak-core dep version under
+# [workspace.dependencies] is updated automatically by the bump step below),
+# commit + push to the GitHub mirror, then dispatch this workflow.
+#
+# HARD ORDERING: oakvcs-cli depends on oakvcs-core by version, and its publish
+# verify-build resolves oakvcs-core *from the crates.io index* (not the local
+# path). So oakvcs-core must be published — and visible on the index — before
+# oakvcs-cli. cargo (1.66+) blocks on index propagation after publish, so the
+# two sequential `cargo publish` calls in one job are safe.
+#
+# DRY RUN caveat: with dry_run=true, oakvcs-core is verify-packaged but NOT
+# uploaded, so the new version isn't on the index and `cargo publish
+# -p oakvcs-cli --dry-run` would fail version resolution. We therefore proxy the
+# CLI check with a local release build (resolves oakvcs-core via the path dep).
+# A real run publishes core first, so the CLI then resolves normally.
+#
+# Required secret:
+#   CARGO_REGISTRY_TOKEN  — crates.io API token with publish-update scope for
+#                           both oakvcs-core and oakvcs-cli (Settings → secrets).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, e.g. 0.96.0 (blank = derive from Cargo.toml). No leading 'v'."
+        required: false
+        type: string
+      dry_run:
+        description: "Verify-build + package only; do NOT upload to crates.io"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-crates
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Pin to the repo's toolchain (matches ci.yml).
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Derive the version from Cargo.toml (same awk snippet as release.yml) and,
+      # if a version input was given, fail loudly on a mismatch rather than
+      # publish a different version than the working tree declares.
+      - name: Determine version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          CARGO_VERSION="$(awk '/^\[workspace.package\]/{f=1} f&&/^version *=/{gsub(/[" ]/,"");split($0,a,"=");print a[2];exit}' Cargo.toml)"
+          if [ -n "${INPUT_VERSION:-}" ] && [ "$INPUT_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::version input '$INPUT_VERSION' != Cargo.toml version '$CARGO_VERSION'. Bump Cargo.toml or fix the input."
+            exit 1
+          fi
+          echo "version=$CARGO_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing version: $CARGO_VERSION"
+
+      # Guard against the classic lockstep slip: the oak-core dependency version
+      # under [workspace.dependencies] must equal [workspace.package].version, or
+      # the CLI would require a stale oakvcs-core off the index.
+      - name: Check oak-core dep version is in lockstep
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          DEP_VERSION="$(sed -n 's/^oak-core *=.*version *= *"\([^"]*\)".*/\1/p' Cargo.toml)"
+          if [ "$DEP_VERSION" != "$VERSION" ]; then
+            echo "::error::[workspace.dependencies] oak-core version '$DEP_VERSION' != workspace version '$VERSION'. Update the oak-core dep version in Cargo.toml."
+            exit 1
+          fi
+          echo "oak-core dep version OK: $DEP_VERSION"
+
+      # --- DRY RUN -----------------------------------------------------------
+      - name: Dry run (verify-package core, compile-check CLI)
+        if: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          echo "::group::cargo publish -p oakvcs-core --dry-run"
+          cargo publish -p oakvcs-core --dry-run
+          echo "::endgroup::"
+          # The CLI cannot dry-run-publish until core's new version is on the
+          # index; a local release build (path dep) is the closest proxy.
+          echo "::group::cargo build --release -p oakvcs-cli"
+          cargo build --release -p oakvcs-cli
+          echo "::endgroup::"
+          echo "Dry run OK. Re-run with dry_run=false to publish for real."
+
+      # --- REAL PUBLISH ------------------------------------------------------
+      - name: Publish oakvcs-core, then oakvcs-cli
+        if: ${{ !inputs.dry_run }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::error::CARGO_REGISTRY_TOKEN secret is not set."
+            exit 1
+          fi
+          # Idempotency: if this exact version is already on the index (e.g. a
+          # rerun after the CLI step failed), skip republishing core. Query the
+          # crates.io API directly — `cargo info` inside the workspace resolves
+          # the LOCAL ./core member and always "finds" the version, a false
+          # positive that skips the core publish (bit the v0.96.0 release).
+          # (crates.io 403s curl's default User-Agent — identify per their policy.)
+          if curl -fsSL -A "oak-publish-workflow (https://oak.space)" \
+              "https://crates.io/api/v1/crates/oakvcs-core/${VERSION}" >/dev/null 2>&1; then
+            echo "oakvcs-core ${VERSION} already on crates.io — skipping core publish."
+          else
+            echo "::group::cargo publish -p oakvcs-core"
+            cargo publish -p oakvcs-core
+            echo "::endgroup::"
+          fi
+          # cargo blocks until core is index-visible, so the CLI now resolves it.
+          echo "::group::cargo publish -p oakvcs-cli"
+          cargo publish -p oakvcs-cli
+          echo "::endgroup::"
+          echo "Published oakvcs-core + oakvcs-cli ${VERSION} to crates.io."

@@ -1,0 +1,110 @@
+name: Build CLI binaries
+
+# Reusable build of the `oak` CLI for all four release targets, one native
+# runner per OS (the Linux fuser backend can't cross-compile from macOS — see
+# the root Makefile). Wraps `make build-release-macos` / `build-release-linux`.
+# Uploads two artifacts the caller collects: `oak-darwin` and `oak-linux`.
+#
+# Called by release.yml (stable) and canary.yml (canary) with `secrets:
+# inherit`. macOS binaries are Developer-ID-signed when the cert secret is
+# present; otherwise they're left ad-hoc signed (the Makefile tolerates this).
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    env:
+      # Lifted to job scope so the import step's `if:` can test it.
+      MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Import the Developer ID Application cert into an ephemeral keychain so
+      # the Makefile's codesign step finds the identity. Skipped (binaries left
+      # ad-hoc signed, which the Makefile warns about but tolerates) when the
+      # cert secret isn't configured.
+      - name: Import Developer ID certificate
+        if: ${{ env.MACOS_CERT_P12_BASE64 != '' }}
+        env:
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/oak-signing.keychain-db"
+          CERT="$RUNNER_TEMP/cert.p12"
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$CERT"
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # Prepend the signing keychain to the search list so codesign sees it.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          rm -f "$CERT"
+
+      - name: Build + sign macOS binaries
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
+            make build-release-macos SIGN_IDENTITY="$MACOS_SIGN_IDENTITY"
+          else
+            make build-release-macos
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: oak-darwin
+          if-no-files-found: error
+          path: |
+            target/releases/oak-darwin-arm64
+            target/releases/oak-darwin-x86_64
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Zig is the cross-linker cargo-zigbuild drives; it's what lets us pin the
+      # glibc floor (2.31) and cross to arm64 from an x86_64 runner.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      # The Linux fuser backend never links libfuse (it execs fusermount3 at
+      # runtime), so the binary runs without fuse3 installed; only `oak mount`
+      # itself needs it. Built on a native Linux runner because that libfuse-free
+      # build does not cross-compile.
+      - name: Build Linux binaries (glibc 2.31)
+        run: make build-release-linux
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: oak-linux
+          if-no-files-found: error
+          path: |
+            target/releases/oak-linux-x86_64
+            target/releases/oak-linux-arm64
