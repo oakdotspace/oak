@@ -1,0 +1,130 @@
+# Published to crates.io as `oakvcs-cli` (installs the `oak` binary via
+# `cargo install oakvcs-cli`). The `oak-cli` name pattern is kept internal.
+[package]
+name = "oakvcs-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "The Oak CLI (`oak`) — version control for you and your agents."
+homepage = "https://oak.space"
+repository = "https://oak.space/oak/oak"
+readme = "README.md"
+keywords = ["vcs", "version-control", "cli", "git"]
+categories = ["development-tools", "command-line-utilities"]
+
+[[bin]]
+name = "oak"
+path = "src/main.rs"
+
+# Keep the library crate importable as `oak_cli` (main.rs and the integration
+# tests do `use oak_cli::...`) even though the package is named `oakvcs-cli`.
+[lib]
+name = "oak_cli"
+path = "src/lib.rs"
+
+[dependencies]
+# oak-core is the sibling workspace member at ../core (published to crates.io
+# as `oakvcs-core`, imported as `oak_core`). The package=version+path is defined
+# once in the workspace root's [workspace.dependencies] so the published version
+# lives in a single place; see there for why both version and path are set.
+# oak-core also carries the client storage layer (the former oak-storage):
+# Repository, SqliteRepository, GitRepository, BulkImporter, StatCacheEntry.
+oak-core = { workspace = true }
+# `color` (on top of the workspace's derive+env) lets clap colorize its
+# auto-generated `oak <cmd> --help`, matching the hand-rolled `oak --help`
+# banner. oak-cli is the only crate that depends on clap, so this stays
+# scoped here and doesn't pull anstream into the server/web builds.
+clap = { workspace = true, features = ["color"] }
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+axum.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dialoguer = { version = "0.12", features = ["fuzzy-select"] }
+# Verify-only minisign implementation (pure Rust, no libsodium). `oak upgrade`
+# uses it to check the signature on a downloaded release binary against the
+# public key baked into the CLI (RELEASE_PUBKEY in commands/upgrade.rs).
+minisign-verify = "0.2"
+# Line-level 3-way merge. Used by `oak merge` and `oak pull`'s parent-sync
+# phase to produce git-style conflict markers around just the diverging
+# hunks rather than wrapping the entire file.
+diffy = "0.4"
+urlencoding = "2"
+zip.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+indicatif.workspace = true
+open = "5"
+dirs = "6"
+tempfile.workspace = true
+uuid = { workspace = true }
+toml = { workspace = true }
+rayon = { workspace = true }
+libc = "0.2"
+
+# Used by `oak clone <git-url>` to walk the cloned git history and replay it
+# as oak commits. Same feature flags as oak-storage so we share the build.
+gix = { workspace = true, features = ["max-performance-safe"] }
+
+# Virtual filesystem for `oak mount`. Always built — there is no `mount`
+# feature flag. Each platform's backend dep is target-gated, so a build only
+# pulls in the one that matches the target.
+#
+# Three backends, picked at compile time per target — all over the shared,
+# backend-neutral `MountCore` (cli/src/commands/mount/core.rs):
+#   - macOS   → Apple FSKit. The filesystem runs in the OS-loaded `OakFS`
+#               extension (Swift, macos/OakFS/); this CLI is the daemon that
+#               serves its VFS ops. NO kernel extension — no macFUSE/fuse-t,
+#               no libfuse linked. Needs macOS 26+ (synthetic FSPathURLResource)
+#               and the signed `Oak Mount` app installed + enabled. The
+#               extension build is a separate Xcode/xcodebuild step.
+#   - Linux   → fuser WITHOUT libfuse (default-features = false). fuser mounts
+#               by exec'ing the `fusermount3` setuid helper at runtime (from
+#               the `fuse3` package) instead of linking libfuse. Two payoffs:
+#               (1) the linux binaries cross-compile from macOS via
+#               cargo-zigbuild with no Linux libfuse to link against, and
+#               (2) no hard libfuse .so dependency on the shipped binary.
+#               Runtime needs `fuse3` installed + /dev/fuse.
+#   - Windows → windows crate's ProjFS bindings (needs the Windows
+#               "Projected File System" optional feature enabled — see README).
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { version = "0.15", default-features = false }
+
+# macOS FSKit XPC broker (`oak __fskit-broker`) vends the `com.oakvcs.mount` mach
+# service the sandboxed OakFS extension connects to. XPC's C API is block-based,
+# so we hand Rust closures to xpc_connection_set_event_handler via block2; the
+# xpc_* / dispatch_* symbols themselves are declared as raw FFI (they live in
+# libSystem, no crate needed).
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { version = "0.6" }
+# Corruption guard for the downloaded "Oak Mounter" app zip after the macOS
+# auto-install path verifies the release minisig.
+sha2 = "0.10"
+
+# Microsoft's Rust bindings for the Win32 ProjFS API. Pulled in only on
+# Windows; the `windows-core` types (PCWSTR, HRESULT, GUID) come along.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_Storage_ProjectedFileSystem",
+    "Win32_System_Com",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+] }
+windows-core = { version = "0.58" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# HTTP-level tests (blob_fetch, mount_remote) run the real reqwest client
+# against a wiremock server — no oak-server needed.
+wiremock = "0.6"
+# Blob-verification tests forge the compressed frames a skewed server ships.
+zstd = "0.13"
