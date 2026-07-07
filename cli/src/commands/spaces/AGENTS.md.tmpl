@@ -1,0 +1,240 @@
+# Oak space — org {{org}}
+
+This directory is an **Oak space** for the `{{org}}` org. It is not a
+checkout. A space spans the **whole org**, not a single repo: each task
+gets its own subdirectory, and inside it you `oak mount` whichever of
+`{{org}}`'s repos the task touches — a lazy, FUSE-backed view per repo,
+each on its own virtual branch. **One subdirectory = one concurrent
+task** (which may span several repos). Spaces are like git worktrees,
+but without a full clone behind each one: mounts hydrate file content on
+demand, so spinning up a fresh task is near-instant and cheap.
+
+Because a space covers the org, cross-repo changes live side by side and
+you can pull in any repo for extra context when a task needs it.
+
+This file ships with `oak space new {{org}}` and is meant to be read by
+the coding agent (Claude Code, Cursor, Codex, etc.) opened here.
+
+## Starting a new task
+
+When the user asks you to start work on a new task:
+
+1. **Pick a slug.** 2–4 word kebab-case identifier describing the task
+   (e.g. `fix-auth-redirect`, `add-search-index`). This names the task
+   directory *and* the virtual branch (`<slug>--<id8>`), so make it
+   describe the work — never the repo name, or branches collapse to
+   `<repo>--<id8>` with no task info. Confirm with the user if ambiguous.
+
+2. **Decide which repo(s) the task needs.** List the org's repos:
+   ```
+   oak space repos
+   ```
+   This calls the API and prints every repo in `{{org}}` you can see
+   (e.g. `{{org}}/web`, `{{org}}/api`). Pick the one the change belongs
+   in — or several, for a cross-repo change. If it's unclear which repo
+   owns the work, ask the user or mount a likely candidate read-only to
+   look around.
+
+3. **Start a mount per repo, under the task directory.**
+   ```
+   oak mount {{org}}/<repo> ./<slug>/<repo>
+   ```
+   Run this once for each repo the task needs. So a single-repo task on
+   `web` becomes `./<slug>/web/`, and a cross-repo task gets
+   `./<slug>/web/` and `./<slug>/api/` side by side. Each mount creates a
+   new virtual branch named for the task — `<slug>--<id8>`, taken from the
+   task directory rather than the repo leaf — off that repo's default branch,
+   and runs as a detached background daemon; the command returns as soon as
+   the mount is live. (A cross-repo task gets one `<slug>--<id8>` branch per
+   repo, each in its own repo.) Mount-aware commands (`oak status`,
+   `oak commit`, etc., run from inside a repo's mount) pick up the
+   virtual branch automatically.
+
+4. **Read each repo's own AGENTS.md.** Agents walk up from cwd to find
+   their instructions file, but cwd stays at the space root — so a
+   repo's instructions won't auto-load. Read `./<slug>/<repo>/AGENTS.md`
+   explicitly if it exists, for every repo you mounted.
+
+So a space for `{{org}}` might hold:
+
+```
+{{org}}/                  # the space (created by `oak space new {{org}}`)
+├── AGENTS.md             # this file
+├── CLAUDE.md             # one-line `@AGENTS.md` import (for Claude Code)
+├── .oak-space            # marker recording the org ({{org}})
+├── .claude/
+│   └── settings.json     # space settings (Stop hook + permissions)
+├── add-search/           # task 1 — touches one repo
+│   └── api/              # mount of {{org}}/api
+└── unify-error-format/   # task 2 — cross-repo change
+    ├── api/              # mount of {{org}}/api
+    └── web/              # mount of {{org}}/web
+```
+
+## Working on a task
+
+- All edits go under `./<slug>/<repo>/`. Never write to the space root,
+  to the task directory itself (only its repo subdirs are mounts), or to
+  a sibling task's directory.
+- `oak status`, `oak diff`, `oak log`, `oak commit`, `oak push` all
+  work when run from inside a repo's mount
+  (`cd ./<slug>/<repo> && oak status`). They route through that mount and
+  operate on its virtual branch.
+- **`oak commit` takes no message.** It accepts no `-m` flag — branch
+  descriptions are the source of truth for "what happened," not
+  per-commit messages. Just `oak commit`; it creates a local checkpoint and
+  never publishes.
+- The overlay (uncommitted changes) is the **active commit**. Run
+  `oak commit` inside a mount to create a local checkpoint; the next edit
+  starts a new active commit on top. Use `oak push` when you explicitly want
+  to publish a mount.
+- Write the branch description to a temp file, then run `oak finish
+  --desc-file <file> --json` from inside the repo mount. From the space root,
+  use `oak mount finish ./<slug>/<repo> --desc-file <file> --json`. Both require a
+  linked remote before mutating, then stepwise set the branch description,
+  checkpoint the active overlay if needed, publish the virtual branch, and
+  tear down the mount after publish succeeds. They are not rollback-atomic; if
+  finalization fails, the mount stays intact and the command names the next
+  manual step.
+- Each repo's mount is independent — commit, push, and describe them
+  separately, even within one cross-repo task.
+
+## Builds and tooling — keep output off the mount
+
+A mount is a lazy, FUSE-backed view: ideal for reading and editing
+source, **poor for build output and tooling caches**. Keep those on the
+real filesystem (e.g. under `/tmp`), not on the mount.
+
+- **Point build/output directories outside the mount.** A build cache
+  that lives on the mount can corrupt its own artifacts and then emit
+  baffling, *wrong* errors on code that is actually fine — e.g. a Rust
+  build failing deep inside a dependency ("cannot find macro …", "type
+  annotations needed") while a throwaway build on the same toolchain
+  succeeds. It is also far slower than local disk. Redirect the output:
+    - Rust: `CARGO_TARGET_DIR=/tmp/<name> cargo build|check|test|clippy`
+    - Node / Bun / etc.: install and build into a temp dir, pointing the
+      tool back at the mount for sources only.
+    - Anything else with a generated `target/` / `dist/` / `build/` /
+      cache dir: send it to `/tmp`.
+- **FUSE refuses `symlink(2)` and `link(2)` (`EPERM`).** Any step that
+  lays down symlinks or hardlinks — `npm`/`bun install` populating
+  `node_modules`, some asset pipelines — must run against a real
+  filesystem outside the mount, or it fails. Install there and reference
+  it; don't let `node_modules` materialize on the mount.
+- **Don't rewrite or delete files in bulk across the whole tree.** A
+  whole-tree formatter pass (`cargo fmt --all`), a repo-wide codemod, or
+  a large `rm -rf` of a generated directory can wedge the mount — I/O
+  starts failing with `os error 22`. Scope formatters and linters to
+  what you changed (`cargo fmt -p <crate>`), and don't bother deleting
+  build dirs (they're off-mount per above, or already ignored).
+- **Recovering a wedged mount.** If commands start returning `os error
+  22`, the mount is wedged. Commit and push whatever you still can, then
+  force-remount: `oak mount end --force ./<slug>/<repo>`, then
+  `oak mount {{org}}/<repo> ./<slug>/<repo>` again. **A force-remount
+  discards the uncommitted overlay**, so save first.
+- **`oak reset` / `oak restore` don't run inside a mount** (they look for
+  a real repo and error "Repository not found"). Use the mount-aware
+  commands — `oak status` / `oak diff` / `oak commit` / `oak log` /
+  `oak push` — to inspect and manage overlay state.
+
+## At the end of every prompt — finalize automatically
+
+When you finish responding to a prompt, **always** wrap up the task on
+your own — no "should I commit?" check-in first. For **each repo you
+touched**, run:
+
+```
+DESC_FILE="$(mktemp)"
+cat > "$DESC_FILE" <<'DESC'
+Short summary of the change.
+
+Optional details about what changed and why.
+DESC
+cd ./<slug>/<repo>
+oak finish --desc-file "$DESC_FILE" --json
+cd ../..
+```
+
+This first requires a linked remote; if none is linked, it fails before
+mutating. It then sets the squash-merge message from the file, checkpoints the
+active overlay if needed, publishes the virtual branch, and tears down the
+mount after publish succeeds. Skip a repo only if `oak status` shows nothing
+changed there and it does not need a new description.
+
+Use `oak desc --file <file>` inside a mount only when you need to update the
+description without finalizing yet. For normal prompt wrap-up, use
+`oak finish --desc-file <file> --json` from inside the mount, or
+`oak mount finish [path] --desc-file <file> --json` when you need to finish a
+mount by path.
+
+Report the branch name(s) and push result for each repo back to the user.
+
+Run all of this every time, unattended. The branches are pushed and the
+mounts are gone by the time you hand the turn back.
+
+## Follow-ups — remount
+
+If the user follows up after you've torn the mounts down, just bring up
+fresh mounts and keep going:
+
+```
+oak mount {{org}}/<repo> ./<slug>/<repo>
+```
+
+Reuse the same `<slug>` (and repo subdir names) so the branches stay
+recognizable, then pick up where you left off and finalize again at the
+end with `oak finish --desc-file <file> --json` inside each repo mount as
+above.
+
+A remount always branches off the repo's trunk — Oak's flat model
+forbids mounting any other branch — so it starts from the latest trunk,
+**not** from the branch you just pushed. If the follow-up needs to build
+on that pushed work, merge it into the trunk first (or have the user
+merge it), then remount.
+
+To abandon a repo without pushing: `oak mount end --force ./<slug>/<repo>`
+— `--force` discards any uncommitted overlay.
+
+## Cleaning up
+
+`oak space clean` tears down every mount in this space whose work is
+fully saved — no uncommitted overlay and no unpushed commits — i.e.
+tasks you've already committed and pushed/merged, across all their
+repos. Mounts with in-flight work are left untouched so you don't lose
+it; pass `--force` to discard and remove those too. Run it from the
+space root, or `oak space clean <path>` to clean one task.
+
+## Knowing what's in flight
+
+- `oak mount list` shows every active mount on the machine with its
+  virtual branch name. Run it when you're unsure what tasks/repos are
+  mounted or before ending a session.
+- `oak mount list --json` shows the same inventory in machine-readable form,
+  including dirty overlay and unpushed commit counts.
+- Inside a repo mount, `oak agent state --json --compact` prints the
+  lowest-token preflight document with recommended next commands. Use full
+  `oak agent state --json` when you need every field; add `--refresh` only
+  when you explicitly want remote freshness fields and accept the network call.
+- Use `oak status --porcelain`/`oak status --short`, `oak diff --name-only`,
+  `oak diff --stat`, and `oak log --oneline -n N` before widening to full
+  JSON or full diff output.
+- `oak branch list --remote --json` lists remote branches without switching
+  your current checkout or mount. Use `oak branch show|diff|review <branch>
+  --remote --json` to triage a remote branch, and `oak close <branch>
+  --remote --json` to close stale remote work.
+- `oak space repos` re-lists the org's repos whenever you need to find
+  another one to mount.
+
+## Branch descriptions
+
+`oak finish --desc-file <file> --json` reads a UTF-8 description file and
+requires a linked remote before mutating; then it stepwise writes the
+description, checkpoints dirty overlay work if needed, publishes, and ends the
+mount. `oak mount finish [path] --desc-file <file> --json` is the path-based
+form for running the same finalization from outside the mount. `oak desc --file <file>` also works
+inside a mount when you only need to update the
+description; `oak desc --file -` reads from stdin when piping generated text
+directly. The branch description becomes the squash-merge commit message when
+the branch is merged into the repo's trunk, so it's worth writing a real
+summary rather than relying on the slug fallback. For a cross-repo task, give
+each repo's branch a description scoped to what changed in that repo.

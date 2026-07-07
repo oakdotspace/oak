@@ -1,0 +1,53 @@
+# Published to crates.io as `oakvcs-core` (the `oak-core` name was taken).
+# The library is still imported as `oak_core` (see `[lib] name`), so consumers
+# can depend on it as `oak-core = { package = "oakvcs-core", version = "..." }`
+# and keep writing `use oak_core::...`.
+[package]
+name = "oakvcs-core"
+version = "0.101.0"
+edition = "2021"
+authors = ["Oak Contributors"]
+license = "Apache-2.0"
+description = "Core version-control primitives for Oak: BLAKE3 content hashing, content-defined chunking, diff/merge, the Blob/Manifest/Commit/Tree data model, and the client-side local repository (SQLite + git backends)."
+homepage = "https://oak.space/oak/oak"
+repository = "https://oak.space/oak/oak"
+documentation = "https://docs.rs/oakvcs-core"
+readme = "README.md"
+keywords = ["vcs", "version-control", "blake3", "content-addressed"]
+categories = ["development-tools", "data-structures"]
+
+[lib]
+name = "oak_core"
+
+[dependencies]
+blake3 = "1.5"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+similar = "3.1"
+ignore = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+fastcdc = "4"
+diffy = "0.4"
+# Local client-side storage (the merged-in oak-storage layer), gated behind
+# the default `local-repo` feature so server-side consumers can take just the
+# data model with `default-features = false`.
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+toml = { version = "1.1", optional = true }
+gix = { version = "0.81", default-features = false, features = ["sha1", "max-performance-safe"], optional = true }
+# At-rest compression for the local SQLite store (tree content + blob content).
+# Local-repo only; the server brings its own zstd.
+zstd = { version = "0.13", optional = true }
+# Parallel hashing/encoding for batched blob writes in the SQLite backend.
+rayon = { workspace = true, optional = true }
+
+[features]
+default = ["local-repo"]
+# The local client-side repository: the synchronous `Repository` trait and its
+# on-disk backends (local SQLite + read-only git). Enabled by default — this is
+# what the `oak` CLI uses. Depend with `default-features = false` to get only
+# the data model + hashing (no rusqlite/gix), which is what the Oak server does.
+local-repo = ["dep:rusqlite", "dep:toml", "dep:gix", "dep:zstd", "dep:rayon"]
+
+[dev-dependencies]
+tempfile = "3.14"
