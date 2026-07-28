@@ -1,0 +1,948 @@
+name: Release (staging)
+
+# NEW WORKFLOW IDENTITY — deliberately not .github/workflows/release.yml.
+# The legacy "Release" workflow (ID 287206482) is disabled_manually on the
+# mirror and must NEVER be re-enabled: its pre-freeze runs stay rerunnable
+# for GitHub's ~30-day window (the 2026-07-07 runs until ~2026-08-06), and a
+# rerun executes its ORIGINAL SHA — the old publish-first pipeline, bypassing
+# every guard here. Deleting release.yml at merge removes the file from the
+# default branch while the old identity stays frozen forever; this file is
+# the replacement identity operators enable and dispatch instead.
+#
+# Build, sign, and publish a STABLE, tagged `oak` release to GitHub Releases —
+# the CLI for all five platform targets (2 darwin, 2 linux, 1 windows) plus the
+# signed macOS "Oak Mount" app.
+#
+# Manually triggered (workflow_dispatch). Jobs:
+#   preflight — BEFORE any build: fail fast if a hard-required secret is
+#               missing, strictly probe the server promotion capability, and
+#               decide the release MODE from the observed state of both
+#               channels: fresh (build + publish end-to-end),
+#               resume-post-promotion (oak.space promoted + GH draft: no
+#               rebuild — minisign signatures are timestamped so a rebuild
+#               can never byte-match the immutable promoted sidecars — verify
+#               the existing draft, confirm promotion, flip), or
+#               already-published (cross-channel verify + re-assert --latest,
+#               never demote). Builds and draft mutations run ONLY in fresh
+#               mode.
+#   cli       — build + Developer-ID-sign the five CLI binaries (reusable
+#               _build-cli; signing REQUIRED on non-dry-run) [fresh mode only]
+#   app       — build the signed OakFS app .zip (reusable _build-macos-app)
+#               [fresh mode only]
+#   release   — minisign every client-installed artifact, then publish in a
+#               fail-closed order: create the vX.Y.Z GitHub Release as a DRAFT
+#               (invisible) carrying the binaries, the .app zip, their .minisig
+#               sidecars, and SHA256SUMS → STAGE on oak.space via
+#               POST /api/releases/stage (content-addressed, unpromoted, not
+#               selectable) → byte-level verify every staged asset on both
+#               channels against this run's build → PROMOTE on oak.space (CAS
+#               hash-map-validated, idempotent; the moment install.sh /
+#               `latest` can see it) → re-fetch and STRUCTURALLY CONFIRM the
+#               promoted state with the shared strict predicate (an HTTP 200
+#               from promote is not the postcondition — the re-queried state
+#               is) → flip the draft live and mark it --latest. A failure
+#               before promote leaves GitHub in draft and oak.space
+#               unpromoted — fully invisible and safely retryable (staged
+#               re-uploads are allowed). A failure after promote (only the GH
+#               flip remains) is also retryable end-to-end because promote is
+#               idempotent.
+#
+# This tagged release is what `oak upgrade` (and the daily version check) resolve
+# via GitHub's /releases/latest redirect. The matching rolling pre-release channel
+# is canary.yml (`oak upgrade --canary`); because that one is a *pre-release*,
+# /releases/latest skips it and stable users never see it.
+#
+# Distribution is GitHub Releases (`github.com/<this repo>`); each download is
+# verified against the minisign RELEASE_PUBKEY baked into the CLI. The signing
+# key lives only in CI secrets (off the distribution channel), so a compromised
+# release can't be forged. See the root Makefile for the build/sign targets and
+# cli/src/commands/upgrade.rs for the verify side.
+#
+# Required secrets (see the PR description for setup):
+#   MINISIGN_SECKEY, MINISIGN_PASSWORD            — release signing
+#   MACOS_CERT_P12_BASE64, MACOS_CERT_PASSWORD,
+#   MACOS_KEYCHAIN_PASSWORD                        — Developer ID codesigning
+#   MACOS_SIGN_IDENTITY (optional)                 — override cert SHA-1
+#   MACOS_HOST_PROFILE_BASE64, MACOS_EXT_PROFILE_BASE64  — OakFS app provisioning
+#   MACOS_NOTARY_KEY_BASE64, MACOS_NOTARY_KEY_ID,
+#   MACOS_NOTARY_ISSUER_ID (optional)              — OakFS app notarization
+# GitHub publishing uses the built-in GITHUB_TOKEN; OAK_ADMIN_API_KEY is
+# REQUIRED as well — it authenticates the oak.space staging/promote writes
+# AND (from server changeset B2) the release-listing reads that drive the
+# capability probe, mode detection, and promotion confirmation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. v0.95.0 (blank = derive from Cargo.toml)"
+        required: false
+        type: string
+      dry_run:
+        description: "Build + sign only; skip publishing the GitHub Release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Fail a stable (non-dry-run) release BEFORE any build starts if a secret
+  # that a later step hard-requires is missing. Without this, a missing
+  # notary/admin secret only surfaces after ~30 minutes of building, or —
+  # worse historically — was silently skipped. Dry runs skip the check (they
+  # publish nothing, so they may run with any subset of secrets configured).
+  # MINISIGN_PASSWORD is deliberately not required: an unencrypted signing key
+  # legitimately has none.
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      # Release mode, decided BEFORE any build (see the mode step):
+      #   fresh                 — full build → sign → draft → stage → verify →
+      #                           promote → flip
+      #   resume-post-promotion — oak.space already promoted + GH draft exists:
+      #                           NO rebuild/re-sign/clobber (minisign trusted
+      #                           comments are timestamped, so a fresh signature
+      #                           never byte-matches the immutable promoted
+      #                           sidecar); verify the EXISTING draft assets
+      #                           against oak.space, confirm promotion, flip
+      #   already-published     — GH release is live: cross-channel verify +
+      #                           re-assert --latest, never demote
+      mode: ${{ steps.mode.outputs.mode }}
+      version: ${{ steps.mode.outputs.version }}
+    env:
+      DRY_RUN: ${{ inputs.dry_run }}
+      # Optional override; defaults to https://oak.space below.
+      OAK_URL: ${{ vars.OAK_URL }}
+      OAK_ADMIN_API_KEY: ${{ secrets.OAK_ADMIN_API_KEY }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      MINISIGN_SECKEY: ${{ secrets.MINISIGN_SECKEY }}
+      MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+      MACOS_HOST_PROFILE_BASE64: ${{ secrets.MACOS_HOST_PROFILE_BASE64 }}
+      MACOS_EXT_PROFILE_BASE64: ${{ secrets.MACOS_EXT_PROFILE_BASE64 }}
+      MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+      MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+      MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+    steps:
+      # Needed for version derivation (Cargo.toml) in the mode step.
+      - uses: actions/checkout@v6
+
+      - name: Require all release secrets (stable runs)
+        run: |
+          set -euo pipefail
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            echo "Dry run — skipping the secret preflight (nothing is published)."
+            exit 0
+          fi
+          missing=""
+          for name in \
+            OAK_ADMIN_API_KEY \
+            MINISIGN_SECKEY \
+            MACOS_CERT_P12_BASE64 MACOS_CERT_PASSWORD MACOS_KEYCHAIN_PASSWORD \
+            MACOS_HOST_PROFILE_BASE64 MACOS_EXT_PROFILE_BASE64 \
+            MACOS_NOTARY_KEY_BASE64 MACOS_NOTARY_KEY_ID MACOS_NOTARY_ISSUER_ID; do
+            [ -n "${!name:-}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Stable release requires secret(s) that are not configured:$missing. Every one of these is hard-required later (signing, notarization, or the oak.space sync) — configure them, or run with dry_run to build without publishing."
+            exit 1
+          fi
+          echo "All release secrets present."
+
+      # ADVISORY fast-fail UX only — the real guards are structural: the
+      # staging endpoint itself (POST /api/releases/stage 404s on any pre-B2
+      # binary, so an upload to a rolled-back server fails in the stage step)
+      # and promote's CAS hash-map validation. These probes exist to fail in
+      # seconds instead of after a ~30-minute build.
+      # The publish path depends on server-side promotion capability shipping
+      # in three oakspace changesets, deployed in order — A (readers-first
+      # promoted_at semantics: `latest` considers promoted releases only), B1
+      # (readers + verification semantics; UNCONDITIONALLY read-only for
+      # releases — every legacy release write returns 410 with error_code
+      # release_writes_retired; must be both the CURRENT deploy and the .prev
+      # rollback slot before B2 ships, so a rollback can never resurrect
+      # pre-promotion writer behavior), B2 (content-addressed staging via
+      # POST /api/releases/stage + the CAS hash-map-validated, idempotent
+      # POST /api/releases/{version}/promote — the single write surface).
+      #   A-probe:  authenticated GET /api/releases must expose `promoted_at`
+      #     in the release rows.
+      #   B1: exposes no distinct probeable surface — its presence (current
+      #     AND .prev) is asserted operationally via the runbook checklist,
+      #     not probed here.
+      #   B2-probe (promote): an UNAUTHENTICATED POST to the promote path of a
+      #     bogus version (can never promote anything real). On a server
+      #     without B2 the path falls into the GET-only
+      #     /releases/{version}/{platform} route → 405 (or 404); with B2
+      #     deployed the static /promote route matches first and
+      #     auth/validation rejects → 400/401. Verified against prod (pre-B2
+      #     returns 405).
+      #   B2-probe (stage): an UNAUTHENTICATED POST to /api/releases/stage.
+      #     Pre-B2 no route matches (one segment under /releases) → 404; with
+      #     B2 deployed auth rejects → 400/401.
+      - name: Probe oak.space promotion capability (stable runs, advisory)
+        run: |
+          set -euo pipefail
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            echo "Dry run — skipping the capability probe (nothing is published)."
+            exit 0
+          fi
+          BASE="${OAK_URL:-https://oak.space}"
+
+          # Probes are STRICT: only the exact expected status codes count.
+          # Anything else (redirects, 5xx, rate-limits) is a probe FAILURE —
+          # refusing to guess beats misreading a broken server as capable.
+          # Listing probe (release_listing_probe, regression-tested): pre-B2
+          # servers accept only a user session on GET /api/releases — the
+          # admin key is a write-endpoint secret there and yields no user, so
+          # the authenticated listing 401s. B2 amends the listing to also
+          # accept the admin key (read-only). So: 200 + promoted_at =
+          # staging-capable (B2+); 401 = pre-B2 (refuse dispatch — this
+          # workflow is only dispatchable post-B2, which the /stage endpoint
+          # guard enforces structurally anyway); anything else = probe
+          # failure. This one probe cannot distinguish A/B1 from each other —
+          # B1's presence (current AND .prev) stays a runbook-checklist
+          # assertion.
+          source scripts/release-state.sh
+          if ! CAP=$(release_listing_probe "$BASE" "$OAK_ADMIN_API_KEY" "$RUNNER_TEMP/probe-list.json"); then
+            echo "::error::listing probe failed (details above) — refusing to guess; investigate before dispatching."
+            exit 1
+          fi
+          if [ "$CAP" = "pre-b2" ]; then
+            echo "::error::authenticated GET $BASE/api/releases returned 401 — the server is not staging-capable yet (pre-B2: the admin key is accepted on the listing only from changeset B2 onward). Keep the HOLD; deploy A -> B1 (current AND .prev) -> B2 before dispatching."
+            exit 1
+          fi
+          echo "Listing probe OK: staging-capable server (HTTP 200 with promoted_at)."
+          echo "Note: changeset B1 (readers + verification semantics) has no distinct probeable surface — confirm it is the current AND the .prev deploy via the runbook checklist."
+
+          B2_CODE=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/releases/v0.0.0-capability-probe/promote" -H 'Content-Type: application/json' -d '{}')
+          case "$B2_CODE" in
+            400|401)
+              echo "B2-probe (promote) OK: endpoint present (unauthenticated probe got HTTP $B2_CODE — changeset B2 deployed)."
+              ;;
+            404|405)
+              echo "::error::B2-probe (promote): POST $BASE/api/releases/{version}/promote is not routed (HTTP $B2_CODE) — the staging+promote changeset (oakspace changeset B2) is not deployed. Deploy B2 (after B1 is current and .prev) before dispatching."
+              exit 1
+              ;;
+            *)
+              echo "::error::B2-probe (promote) failed: unexpected HTTP $B2_CODE (expected exactly 400/401 = present, 404/405 = absent). Refusing to guess — investigate before dispatching."
+              exit 1
+              ;;
+          esac
+
+          STAGE_CODE=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/releases/stage" -H 'Content-Type: application/json' -d '{}')
+          case "$STAGE_CODE" in
+            400|401)
+              echo "B2-probe (stage) OK: staging endpoint present (unauthenticated probe got HTTP $STAGE_CODE)."
+              ;;
+            404|410)
+              echo "::error::B2-probe (stage): POST $BASE/api/releases/stage is not routed (HTTP $STAGE_CODE) — the server does not speak the staging protocol (changeset B2 absent or rolled back). Deploy B2 before dispatching. (This probe is advisory; the stage step itself also fails structurally on this.)"
+              exit 1
+              ;;
+            *)
+              echo "::error::B2-probe (stage) failed: unexpected HTTP $STAGE_CODE (expected exactly 400/401 = present, 404/410 = absent). Refusing to guess — investigate before dispatching."
+              exit 1
+              ;;
+          esac
+
+      # Decide the release mode BEFORE any build, from the observed state of
+      # BOTH channels. Rebuilding first and inspecting later is fatal on a
+      # post-promote retry: minisign trusted comments are timestamped, so a
+      # fresh signature never byte-matches the immutable promoted .minisig —
+      # and a rebuild-then-clobber destroys the draft assets that DO match.
+      # State table (GH release state x oak.space promotion state):
+      #   absent  + unpromoted → fresh
+      #   draft   + unpromoted → fresh (draft re-clobbered, staging re-upload)
+      #   draft   + promoted   → resume-post-promotion (no rebuild, no clobber)
+      #   published (any)      → already-published (never demote; promotion is
+      #                          re-confirmed structurally later)
+      #   absent  + promoted   → inconsistent (promote runs only after the
+      #                          draft exists) → fail for operator action
+      # Dry runs always take mode=fresh: they build and publish nothing.
+      - name: Determine release mode
+        id: mode
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          CARGO_VERSION="v$(awk '/^\[workspace.package\]/{f=1} f&&/^version *=/{gsub(/[" ]/,"");split($0,a,"=");print a[2];exit}' Cargo.toml)"
+          if [ -n "${INPUT_VERSION:-}" ] && [ "$INPUT_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::version input '$INPUT_VERSION' != Cargo.toml version '$CARGO_VERSION'. Bump Cargo.toml or fix the input."
+            exit 1
+          fi
+          VERSION="$CARGO_VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            echo "mode=fresh" >> "$GITHUB_OUTPUT"
+            echo "Dry run — mode=fresh (build only, nothing published)."
+            exit 0
+          fi
+
+          # GitHub channel state: absent | draft | published. Fail closed on
+          # anything that isn't a clean answer — a gh/API error must never be
+          # read as "absent" (that would route a live release into fresh mode).
+          set +e
+          GH_OUT=$(gh release view "$VERSION" --json isDraft 2>&1)
+          GH_RC=$?
+          set -e
+          if [ "$GH_RC" -ne 0 ]; then
+            if grep -qi "release not found" <<<"$GH_OUT"; then
+              GH_STATE=absent
+            else
+              echo "::error::gh release view '$VERSION' failed for a reason other than 'release not found' — refusing to guess the GitHub channel state. Raw output:"
+              printf '%s\n' "$GH_OUT"
+              exit 1
+            fi
+          else
+            IS_DRAFT=$(jq -r '.isDraft' <<<"$GH_OUT") || { echo "::error::could not parse gh release view output as JSON. Raw output:"; printf '%s\n' "$GH_OUT"; exit 1; }
+            case "$IS_DRAFT" in
+              true)  GH_STATE=draft ;;
+              false) GH_STATE=published ;;
+              *)
+                echo "::error::gh release view returned an unexpected isDraft value '$IS_DRAFT' — refusing to guess. Raw output:"
+                printf '%s\n' "$GH_OUT"
+                exit 1 ;;
+            esac
+          fi
+
+          # oak.space promotion state via the SHARED strict predicate
+          # (scripts/release-state.sh): "promoted" only for exactly the six
+          # expected platforms, each once, all with a valid RFC3339-shaped promoted_at;
+          # partial/duplicate/malformed states fail closed here, BEFORE any
+          # build or mutation. The A-probe already pinned this endpoint to 200.
+          BASE="${OAK_URL:-https://oak.space}"
+          LIST="$RUNNER_TEMP/mode-releases.json"
+          CODE=$(curl -sS -o "$LIST" -w '%{http_code}' -H "Authorization: Bearer $OAK_ADMIN_API_KEY" "$BASE/api/releases")
+          if [ "$CODE" != "200" ]; then
+            echo "::error::GET $BASE/api/releases returned HTTP $CODE (expected 200) while determining release mode. Body:"
+            cat "$LIST" || true
+            exit 1
+          fi
+          source scripts/release-state.sh
+          if ! PROMO_STATE=$(release_promotion_state "$VERSION" "$LIST"); then
+            echo "::error::$VERSION's oak.space promotion state is invalid or ambiguous (details above) — failing closed before any build or mutation. Operator action required."
+            exit 1
+          fi
+
+          echo "Observed state: GitHub=$GH_STATE oak.space=$PROMO_STATE"
+          # The decision table lives in scripts/release-state.sh
+          # (release_decide_mode) so it is regression-tested directly.
+          if ! MODE=$(release_decide_mode "$GH_STATE" "$PROMO_STATE"); then
+            echo "::error::Inconsistent release state for $VERSION (details above) — failing closed; operator action required (do NOT re-dispatch until resolved)."
+            exit 1
+          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "Release mode: $MODE"
+
+  # Builds run ONLY in fresh mode (dry runs are always fresh). In
+  # resume-post-promotion and already-published modes the artifacts of record
+  # already exist on the draft/published release and must not be rebuilt or
+  # replaced — a rebuild can never byte-match the immutable promoted sidecars.
+  cli:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.mode == 'fresh' }}
+    uses: ./.github/workflows/_build-cli.yml
+    with:
+      # Stable releases must ship Developer-ID-signed darwin binaries; only
+      # dry runs may fall back to the ad-hoc-signed warning path.
+      require-signing: ${{ !inputs.dry_run }}
+    secrets: inherit
+
+  app:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.mode == 'fresh' }}
+    uses: ./.github/workflows/_build-macos-app.yml
+    with:
+      artifact-name: oak-mounter-app
+    secrets: inherit
+
+  release:
+    runs-on: ubuntu-latest
+    # cli/app are skipped outside fresh mode, so gate on results explicitly:
+    # run when preflight succeeded AND (mode != fresh, or both builds passed).
+    needs: [preflight, cli, app]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && (needs.preflight.outputs.mode != 'fresh' || (needs.cli.result == 'success' && needs.app.result == 'success')) }}
+    env:
+      # Surfaced at job level for the "Sync to /api/releases" step. A stable
+      # (non-dry-run) release REQUIRES it: without the sync, install.sh keeps
+      # serving the previous version while GitHub says the release succeeded.
+      # The sync step fails closed when it's unset; dry runs never need it.
+      OAK_ADMIN_API_KEY: ${{ secrets.OAK_ADMIN_API_KEY }}
+      # Release mode decided by preflight BEFORE any build (fresh /
+      # resume-post-promotion / already-published) — gates every step below.
+      MODE: ${{ needs.preflight.outputs.mode }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # Build-artifact handling runs ONLY in fresh mode: in the resume/
+      # published modes the artifacts of record already live on the GitHub
+      # release and are never rebuilt, re-signed, or replaced.
+      - name: Collect built binaries
+        if: ${{ needs.preflight.outputs.mode == 'fresh' }}
+        uses: actions/download-artifact@v8
+        with:
+          path: target/releases
+          merge-multiple: true
+
+      - name: Install minisign
+        if: ${{ needs.preflight.outputs.mode == 'fresh' }}
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
+      - name: Sign release artifacts (minisign)
+        if: ${{ needs.preflight.outputs.mode == 'fresh' }}
+        env:
+          MINISIGN_SECKEY_CONTENTS: ${{ secrets.MINISIGN_SECKEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECKEY_CONTENTS:-}" ]; then
+            echo "::error::MINISIGN_SECKEY secret is not set — releases must be signed (oak upgrade and first-run oak mount installs fail closed on unsigned artifacts)."
+            exit 1
+          fi
+          KEY="$RUNNER_TEMP/release.key"
+          printf '%s\n' "$MINISIGN_SECKEY_CONTENTS" > "$KEY"
+          make sign-release MINISIGN_SECKEY="$KEY" MINISIGN_PASSWORD="${MINISIGN_PASSWORD:-}"
+          rm -f "$KEY"
+
+      - name: Generate SHA256SUMS
+        if: ${{ needs.preflight.outputs.mode == 'fresh' }}
+        working-directory: target/releases
+        run: |
+          set -euo pipefail
+          ASSETS=(oak-darwin-arm64 oak-darwin-x86_64 oak-linux-x86_64 oak-linux-arm64 oak-windows-x86_64.exe)
+          if [ -f OakMount.zip ]; then
+            ASSETS+=(OakMount.zip)
+          fi
+          shasum -a 256 "${ASSETS[@]}" > SHA256SUMS
+
+      # The release tag must equal the binary's CARGO_PKG_VERSION — that's what
+      # `oak upgrade` compares (upgrade.rs is_newer_version). Fail loudly on a
+      # mismatch rather than ship a vX binary under a vY tag.
+      - name: Determine version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          PREFLIGHT_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          CARGO_VERSION="v$(awk '/^\[workspace.package\]/{f=1} f&&/^version *=/{gsub(/[" ]/,"");split($0,a,"=");print a[2];exit}' Cargo.toml)"
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            if [ "$INPUT_VERSION" != "$CARGO_VERSION" ]; then
+              echo "::error::version input '$INPUT_VERSION' != Cargo.toml version '$CARGO_VERSION'. Bump Cargo.toml or fix the input."
+              exit 1
+            fi
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION="$CARGO_VERSION"
+          fi
+          # The mode decision in preflight is only valid for the version it
+          # inspected — refuse to proceed if the ref moved between jobs.
+          if [ -n "${PREFLIGHT_VERSION:-}" ] && [ "$VERSION" != "$PREFLIGHT_VERSION" ]; then
+            echo "::error::version drift: preflight decided mode '$MODE' for '$PREFLIGHT_VERSION' but this job derives '$VERSION'. Re-dispatch the workflow."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Release version: $VERSION (mode: $MODE)"
+
+      # Always keep the signed bundle as a run artifact — the only output on a
+      # dry run, and a handy audit trail on a real release. Fresh mode only:
+      # the resume/published modes build nothing.
+      - uses: actions/upload-artifact@v7
+        if: ${{ needs.preflight.outputs.mode == 'fresh' }}
+        with:
+          name: oak-release-signed
+          if-no-files-found: error
+          path: |
+            target/releases/oak-*
+            target/releases/OakMount.zip
+            target/releases/OakMount.zip.minisig
+            target/releases/SHA256SUMS
+
+      # Stable releases ship the notarized OakMount app — v0.101.0 (and its
+      # predecessors) carried OakMount.zip, notarized and stapled, and both
+      # install.sh's darwin step and first-run `oak mount` installs depend on
+      # it. Fail closed BEFORE publishing anything rather than silently cut a
+      # CLI-only or Gatekeeper-hostile release: the app job self-skips when the
+      # MACOS_* signing secrets are missing and only warns when the notary
+      # secrets are missing, both of which are fine for canary but not here.
+      # Dry runs are exempt so a CLI-only smoke build stays possible. Fresh
+      # mode only: the resume/published modes ship no new artifacts (the app
+      # already rode the original release; cross-channel verification covers it).
+      - name: Require notarized OakMount app
+        if: ${{ !inputs.dry_run && needs.preflight.outputs.mode == 'fresh' }}
+        env:
+          APP_BUILT: ${{ needs.app.outputs.built }}
+          APP_NOTARIZED: ${{ needs.app.outputs.notarized }}
+        run: |
+          set -euo pipefail
+          if [ "${APP_BUILT:-false}" != "true" ] || [ ! -f target/releases/OakMount.zip ]; then
+            echo "::error::Stable release requires the OakMount app but the app job produced no artifact (check the MACOS_CERT_P12_BASE64 / MACOS_*_PROFILE_BASE64 secrets). Use dry_run for a CLI-only build."
+            exit 1
+          fi
+          if [ ! -f target/releases/OakMount.zip.minisig ]; then
+            echo "::error::OakMount.zip is present but OakMount.zip.minisig is missing — first-run 'oak mount' installs refuse unsigned app zips."
+            exit 1
+          fi
+          if [ "${APP_NOTARIZED:-false}" != "true" ]; then
+            echo "::error::OakMount.zip was built but NOT notarized (check the MACOS_NOTARY_* secrets) — stable releases must not ship a Gatekeeper-blocked app. Use dry_run to build without notarizing."
+            exit 1
+          fi
+          echo "OakMount app present, signed, and notarized."
+
+      # DRAFT first — the release is created invisible and only flipped live by
+      # the final step, after the oak.space staging upload, the byte-level
+      # verification, and the promote all succeed. A failure anywhere in
+      # between leaves GitHub holding an invisible draft and oak.space holding
+      # an unpromoted staging release: neither public channel moves without the
+      # other (no split-brain where `oak upgrade` sees a version install.sh
+      # doesn't, or vice versa).
+      # Fresh mode only: preflight already routed an existing PUBLISHED release
+      # to already-published mode (never demoted, assets untouched) and a
+      # promoted draft to resume-post-promotion (never clobbered). Here GH is
+      # absent or an unpromoted draft; a draft is re-clobbered in place. If a
+      # published release appears mid-run anyway (raced by another actor),
+      # fail — a re-dispatch will detect the correct mode.
+      - name: Create draft GitHub Release
+        id: draft
+        if: ${{ !inputs.dry_run && needs.preflight.outputs.mode == 'fresh' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+          APP_BUILT: ${{ needs.app.outputs.built }}
+        run: |
+          set -euo pipefail
+          cd target/releases
+          ASSETS=(
+            oak-darwin-arm64 oak-darwin-x86_64 oak-linux-x86_64 oak-linux-arm64
+            oak-windows-x86_64.exe
+            oak-darwin-arm64.minisig oak-darwin-x86_64.minisig
+            oak-linux-x86_64.minisig oak-linux-arm64.minisig
+            oak-windows-x86_64.exe.minisig
+            SHA256SUMS
+          )
+          # The signed OakFS app rides along when the app job produced it (it
+          # self-skips if the macOS signing/profile secrets aren't configured).
+          if [ "${APP_BUILT:-false}" = "true" ] && [ -f OakMount.zip ]; then
+            if [ ! -f OakMount.zip.minisig ]; then
+              echo "::error::OakMount.zip was built but OakMount.zip.minisig is missing."
+              exit 1
+            fi
+            ASSETS+=(OakMount.zip OakMount.zip.minisig)
+          else
+            echo "::warning::OakFS app not attached (app build was skipped — check macOS signing/profile secrets)."
+          fi
+          # The canonical history lives in the Oak repo, not GitHub (this is a
+          # mirror with no PRs), so point "Full Changelog" at oak.space instead
+          # of GitHub's auto-generated compare/commits link.
+          NOTES="**Full Changelog**: https://oak.space/oak/oak"
+          # Structured state read — a gh/API error is never read as "absent"
+          # (that could double-create or mask a live release); only an
+          # explicit "release not found" means absent.
+          set +e
+          GH_OUT=$(gh release view "$VERSION" --json isDraft,targetCommitish 2>&1)
+          GH_RC=$?
+          set -e
+          if [ "$GH_RC" -ne 0 ]; then
+            if ! grep -qi "release not found" <<<"$GH_OUT"; then
+              echo "::error::gh release view '$VERSION' failed for a reason other than 'release not found' — refusing to guess. Raw output:"
+              printf '%s\n' "$GH_OUT"
+              exit 1
+            fi
+            gh release create "$VERSION" \
+              --title "$VERSION" \
+              --target "$GITHUB_SHA" \
+              --draft \
+              --notes "$NOTES" \
+              "${ASSETS[@]}"
+          else
+            IS_DRAFT=$(jq -r '.isDraft' <<<"$GH_OUT") || { echo "::error::could not parse gh release view output. Raw output:"; printf '%s\n' "$GH_OUT"; exit 1; }
+            DRAFT_TARGET=$(jq -r '.targetCommitish' <<<"$GH_OUT") || { echo "::error::could not parse targetCommitish. Raw output:"; printf '%s\n' "$GH_OUT"; exit 1; }
+            # Tag provenance + never-demote decision lives in
+            # scripts/release-state.sh (release_draft_action) so it is
+            # regression-tested directly: assets built by this run must never
+            # publish under a tag pointing at an older commit, and a
+            # published release is never pulled back to draft.
+            source scripts/release-state.sh
+            if ! ACTION=$(release_draft_action "$IS_DRAFT" "$DRAFT_TARGET" "$GITHUB_SHA"); then
+              echo "::error::Release $VERSION cannot be mutated in fresh mode (details above — likely published mid-run). Re-dispatch so preflight routes to the correct mode."
+              exit 1
+            fi
+            if [ "$ACTION" = "retarget-then-clobber" ]; then
+              echo "Existing draft targets '$DRAFT_TARGET' but this run builds from '$GITHUB_SHA' — retargeting the draft before re-clobbering."
+              gh release edit "$VERSION" --target "$GITHUB_SHA"
+            fi
+            echo "Release $VERSION already exists as a draft — re-clobbering its assets (still invisible)."
+            gh release upload "$VERSION" "${ASSETS[@]}" --clobber
+          fi
+          echo "Draft release $VERSION staged on $GH_REPO (invisible until the final flip step)."
+
+      # Mirror the built assets into oak.space/api/releases. That's a SEPARATE
+      # distribution channel from the GitHub Release above: `oak upgrade`
+      # resolves GitHub's /releases/latest, but the `curl … | sh` install script
+      # reads /api/releases — so without this step a fresh GitHub release leaves
+      # install.sh serving the previous version. Pushes the five CLI binaries
+      # (+minisigs) AND the macOS "Oak Mount" app (platform darwin-mounter), so
+      # install.sh's darwin step can fetch the matching app. STAGING ONLY:
+      # uploads land content-addressed and unpromoted — not selectable by
+      # install.sh or `oak upgrade`'s `latest` — until the promote step AFTER
+      # byte-level verification. Staged re-uploads are allowed, so a failure
+      # here (or anywhere pre-promote) is safely retryable by re-running the
+      # workflow. Reuses the Makefile's upload-release target (single source of
+      # truth with `make release-all`); REQUIRE_MOUNTER makes a missing
+      # OakMount.zip a hard failure whenever the app job built one, instead of
+      # silently dropping darwin-mounter.
+      # REQUIRED on stable (non-dry-run) releases: the step fails when
+      # OAK_ADMIN_API_KEY isn't configured rather than skipping, because a
+      # skipped sync means the workflow reports success while install.sh keeps
+      # serving the previous version. Forks without the secret must use
+      # dry_run. Skipped on dry runs.
+      # Fresh mode only: resume-post-promotion and already-published re-upload
+      # nothing (the promoted assets are immutable and already served).
+      # Retry semantics: preflight saw $VERSION unpromoted, but another actor
+      # (or a lost race with a concurrent run) may promote it mid-run. On any
+      # upload failure the step re-queries the STRUCTURED promotion state
+      # (authenticated GET /api/releases → the version row's promoted_at — no
+      # prose matching of server error text); if the version turns out
+      # promoted, staging is skipped in favor of verification, which then
+      # decides whether this run's build agrees with the promoted bytes.
+      - name: Stage release on oak.space /api/releases (unpromoted)
+        id: stage
+        if: ${{ !inputs.dry_run && needs.preflight.outputs.mode == 'fresh' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          # Optional override; the Makefile defaults to https://oak.space.
+          OAK_URL: ${{ vars.OAK_URL }}
+          APP_BUILT: ${{ needs.app.outputs.built }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OAK_ADMIN_API_KEY:-}" ]; then
+            echo "::error::OAK_ADMIN_API_KEY is not configured — a stable release must sync to ${OAK_URL:-https://oak.space}/api/releases (otherwise install.sh keeps serving the previous version while this workflow reports success). Add the secret, or use dry_run."
+            exit 1
+          fi
+          BASE="${OAK_URL:-https://oak.space}"
+          REQUIRE=""
+          [ "${APP_BUILT:-false}" = "true" ] && REQUIRE=1
+          set +e
+          make upload-release \
+            VERSION="$VERSION" \
+            OAK_ADMIN_API_KEY="$OAK_ADMIN_API_KEY" \
+            ${REQUIRE:+REQUIRE_MOUNTER=1} \
+            ${OAK_URL:+OAK_URL="$OAK_URL"}
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            # The SHARED strict predicate (scripts/release-state.sh) decides
+            # whether this failure is "the version is already promoted" (then
+            # skip to verification) or a genuine staging failure. Any parse/
+            # schema/HTTP problem in that check fails closed — never "treat as
+            # unpromoted".
+            LIST="$RUNNER_TEMP/stage-releases.json"
+            CODE=$(curl -sS -o "$LIST" -w '%{http_code}' -H "Authorization: Bearer $OAK_ADMIN_API_KEY" "$BASE/api/releases")
+            if [ "$CODE" != "200" ]; then
+              echo "::error::staging failed (exit $rc) AND the promotion-state check got HTTP $CODE from GET $BASE/api/releases (expected 200) — failing closed. Body:"
+              cat "$LIST" || true
+              exit 1
+            fi
+            source scripts/release-state.sh
+            if ! STATE=$(release_promotion_state "$VERSION" "$LIST"); then
+              echo "::error::staging failed (exit $rc) AND $VERSION's promotion state is invalid or ambiguous (details above) — failing closed. Operator action required."
+              exit 1
+            fi
+            if [ "$STATE" = "promoted" ]; then
+              echo "promoted_preexisting=true" >> "$GITHUB_OUTPUT"
+              echo "::warning::$VERSION is already fully promoted on oak.space (strict structured check) — staging skipped (exit $rc tolerated); proceeding to verification against the promoted assets."
+            else
+              echo "promoted_preexisting=false" >> "$GITHUB_OUTPUT"
+              exit "$rc"
+            fi
+          else
+            echo "promoted_preexisting=false" >> "$GITHUB_OUTPUT"
+            echo "Staged $VERSION on $BASE/api/releases (unpromoted — not yet selectable)."
+          fi
+
+      # Trust nothing until it's served BYTE-FOR-BYTE — and verify BEFORE
+      # promoting: the version-pinned GETs serve STAGED releases exactly for
+      # this purpose, so every asset can be downloaded back from both channels
+      # and compared against the artifact this very run built (sha256 for the
+      # binaries, byte-compare for the small sidecars) while nothing is public
+      # yet. Also fetch the /sha256 endpoint install.sh actually consumes per
+      # platform and assert it equals the built artifact's checksum — a served
+      # binary that matches but a stale/wrong published checksum would still
+      # break installs. A failure here leaves oak.space UNPROMOTED and GitHub
+      # in draft: fully invisible, and retryable by re-running the workflow
+      # (staged re-uploads are allowed). Only success lets the promote + flip
+      # steps make anything public.
+      # Mode-branched verification:
+      #  * fresh: every asset on both channels must byte-match THIS RUN'S
+      #    build; SHA256SUMS content is validated line-by-line against the
+      #    built artifacts; the GitHub asset set must EXACTLY equal the
+      #    expected set (nothing missing, nothing unexpected).
+      #  * resume-post-promotion / already-published: nothing was rebuilt (a
+      #    fresh minisign signature could never byte-match the immutable
+      #    promoted sidecar), so verify CROSS-CHANNEL consistency instead —
+      #    the EXISTING GitHub assets (draft or published) must form exactly
+      #    the expected set, satisfy their own SHA256SUMS, and byte-match what
+      #    oak.space serves (binary, /sha256, minisig).
+      - name: Verify staged release assets (byte-level)
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+          OAK_URL: ${{ vars.OAK_URL }}
+          PROMOTED_PREEXISTING: ${{ steps.stage.outputs.promoted_preexisting }}
+        run: |
+          set -euo pipefail
+          EXPECTED=(
+            oak-darwin-arm64 oak-darwin-x86_64 oak-linux-x86_64 oak-linux-arm64
+            oak-windows-x86_64.exe
+            oak-darwin-arm64.minisig oak-darwin-x86_64.minisig
+            oak-linux-x86_64.minisig oak-linux-arm64.minisig
+            oak-windows-x86_64.exe.minisig
+            OakMount.zip OakMount.zip.minisig
+            SHA256SUMS
+          )
+          # The 6 client-installed binaries SHA256SUMS must cover.
+          SUMMED=(
+            oak-darwin-arm64 oak-darwin-x86_64 oak-linux-x86_64 oak-linux-arm64
+            oak-windows-x86_64.exe OakMount.zip
+          )
+          BASE="${OAK_URL:-https://oak.space}"
+
+          # --- GitHub channel: EXACT asset-set equality (missing OR unexpected
+          # assets both fail), then download everything.
+          PUBLISHED_SORTED=$(gh release view "$VERSION" --json assets --jq '.assets[].name' | sort)
+          EXPECTED_SORTED=$(printf '%s\n' "${EXPECTED[@]}" | sort)
+          if [ "$PUBLISHED_SORTED" != "$EXPECTED_SORTED" ]; then
+            echo "::error::GitHub release $VERSION asset set does not exactly match the expected set. Diff (expected vs actual):"
+            diff <(printf '%s\n' "$EXPECTED_SORTED") <(printf '%s\n' "$PUBLISHED_SORTED") || true
+            exit 1
+          fi
+          echo "GitHub release $VERSION: asset set exactly matches (${#EXPECTED[@]} assets)."
+          GH_DIR="$RUNNER_TEMP/gh-verify"
+          mkdir -p "$GH_DIR"
+          gh release download "$VERSION" --dir "$GH_DIR" --pattern '*'
+          for asset in "${EXPECTED[@]}"; do
+            if [ ! -f "$GH_DIR/$asset" ]; then
+              echo "::error::GitHub release $VERSION asset $asset failed to download."
+              exit 1
+            fi
+          done
+
+          # --- SHA256SUMS content: every summed binary must be listed, and
+          # every listed line must match the artifacts being verified (the GH
+          # assets themselves in resume/published modes; the local build is
+          # additionally compared below in fresh mode).
+          for asset in "${SUMMED[@]}"; do
+            grep -qE " \*?$asset\$" "$GH_DIR/SHA256SUMS" || { echo "::error::SHA256SUMS does not list $asset."; exit 1; }
+          done
+          (cd "$GH_DIR" && shasum -a 256 -c SHA256SUMS) || { echo "::error::SHA256SUMS lines do not match the release assets."; exit 1; }
+          echo "SHA256SUMS covers all ${#SUMMED[@]} binaries and every line verifies."
+
+          if [ "${MODE}" != "fresh" ]; then
+            echo "Mode $MODE — cross-channel verification (existing GitHub assets vs oak.space; no rebuild happened, none compared)."
+            DL="$RUNNER_TEMP/oakspace-verify"
+            mkdir -p "$DL"
+            for platform in darwin-arm64 darwin-x86_64 linux-x86_64 linux-arm64 windows-x86_64 darwin-mounter; do
+              case "$platform" in
+                darwin-mounter)  gh_file="$GH_DIR/OakMount.zip" ;;
+                windows-x86_64)  gh_file="$GH_DIR/oak-windows-x86_64.exe" ;;
+                *)               gh_file="$GH_DIR/oak-$platform" ;;
+              esac
+              want_sha=$(shasum -a 256 "$gh_file" | awk '{print $1}')
+              url="$BASE/api/releases/$VERSION/$platform"
+              curl --fail-with-body -sS -o "$DL/$platform.bin" "$url" || { echo "::error::$url is not being served."; exit 1; }
+              got_sha=$(shasum -a 256 "$DL/$platform.bin" | awk '{print $1}')
+              [ "$got_sha" = "$want_sha" ] || { echo "::error::$url serves sha256 $got_sha but the GitHub asset is $want_sha — the two channels disagree."; exit 1; }
+              served_sha=$(curl --fail-with-body -sS "$url/sha256") || { echo "::error::$url/sha256 is not being served."; exit 1; }
+              [ "$(printf '%s' "$served_sha" | tr -d '[:space:]')" = "$want_sha" ] || { echo "::error::$url/sha256 publishes '$served_sha' but the GitHub asset's sha256 is $want_sha."; exit 1; }
+              curl --fail-with-body -sS -o "$DL/$platform.minisig" "$url/minisig" || { echo "::error::$url/minisig is not being served."; exit 1; }
+              cmp -s "$gh_file.minisig" "$DL/$platform.minisig" || { echo "::error::$url/minisig does not byte-match the GitHub minisig."; exit 1; }
+              echo "OK $platform: oak.space matches the GitHub assets."
+            done
+            echo "Cross-channel verification passed — $VERSION is coherent on both channels ($MODE)."
+            exit 0
+          fi
+
+          # --- Normal mode: byte-compare both channels against this run's build.
+          for asset in "${EXPECTED[@]}"; do
+            if ! cmp -s "target/releases/$asset" "$GH_DIR/$asset"; then
+              echo "::error::GitHub asset $asset does not byte-match the artifact built by this run."
+              exit 1
+            fi
+          done
+          echo "GitHub release $VERSION: all ${#EXPECTED[@]} assets present and byte-identical to this run's build."
+
+          # --- oak.space channel: binary sha256, published /sha256, minisig
+          # bytes. Along the way, build the promote hash-map payload from the
+          # hashes VERIFIED here — the promote step posts it verbatim, so the
+          # server CAS-compares exactly what this verification attested.
+          # (No stored-attestation adoption is needed on this path: these
+          # hashes are computed from bytes proven identical to what the
+          # server serves — including the minisig — so for an
+          # already-promoted platform they ARE the stored values. The
+          # adoption logic in make upload-release/promote-release covers the
+          # local release-all path and partial retries, where a re-signed
+          # local minisig would otherwise CAS-mismatch.)
+          DL="$RUNNER_TEMP/oakspace-verify"
+          mkdir -p "$DL"
+          PAYLOAD='{"platforms":{}}'
+          for platform in darwin-arm64 darwin-x86_64 linux-x86_64 linux-arm64 windows-x86_64 darwin-mounter; do
+            case "$platform" in
+              darwin-mounter)  local_file="target/releases/OakMount.zip" ;;
+              windows-x86_64)  local_file="target/releases/oak-windows-x86_64.exe" ;;
+              *)               local_file="target/releases/oak-$platform" ;;
+            esac
+            want_sha=$(shasum -a 256 "$local_file" | awk '{print $1}')
+
+            url="$BASE/api/releases/$VERSION/$platform"
+            if ! curl --fail-with-body -sS -o "$DL/$platform.bin" "$url"; then
+              echo "::error::$url is not being served — the oak.space sync is incomplete."
+              exit 1
+            fi
+            got_sha=$(shasum -a 256 "$DL/$platform.bin" | awk '{print $1}')
+            if [ "$got_sha" != "$want_sha" ]; then
+              echo "::error::$url serves sha256 $got_sha but this run built $want_sha — served bytes differ from the release build."
+              if [ "${PROMOTED_PREEXISTING:-false}" = "true" ]; then
+                echo "::error::$VERSION was already promoted with different bytes. Promoted versions are immutable; convergence requires a byte-identical rebuild, or operator action — see the retry matrix in docs/release-0.102.0-runbook.md."
+              fi
+              exit 1
+            fi
+
+            if ! served_sha=$(curl --fail-with-body -sS "$url/sha256"); then
+              echo "::error::$url/sha256 is not being served — install.sh consumes this checksum."
+              exit 1
+            fi
+            if [ "$(printf '%s' "$served_sha" | tr -d '[:space:]')" != "$want_sha" ]; then
+              echo "::error::$url/sha256 publishes '$served_sha' but the built artifact's sha256 is $want_sha."
+              exit 1
+            fi
+
+            if ! curl --fail-with-body -sS -o "$DL/$platform.minisig" "$url/minisig"; then
+              echo "::error::$url/minisig is not being served — clients refuse unsigned artifacts."
+              exit 1
+            fi
+            if ! cmp -s "$local_file.minisig" "$DL/$platform.minisig"; then
+              echo "::error::$url/minisig does not byte-match the minisig this run produced."
+              exit 1
+            fi
+            minisig_sha=$(shasum -a 256 "$local_file.minisig" | awk '{print $1}')
+            PAYLOAD=$(jq --arg p "$platform" --arg s "$want_sha" --arg m "$minisig_sha" \
+              '.platforms[$p] = {sha256: $s, minisig_sha256: $m}' <<<"$PAYLOAD") || {
+              echo "::error::failed to add $platform to the promote payload."; exit 1; }
+            echo "OK $platform: binary sha256, published /sha256, and minisig all match the build."
+          done
+          printf '%s\n' "$PAYLOAD" | jq . > "$RUNNER_TEMP/promote-payload.json"
+          echo "Promote payload written ($RUNNER_TEMP/promote-payload.json):"
+          cat "$RUNNER_TEMP/promote-payload.json"
+          echo "All staged release assets verified byte-level on GitHub and ${BASE}."
+
+      # Everything is staged and byte-verified — promote. The body is the HASH
+      # MAP the verification step wrote ({"platforms": {"<slug>": {"sha256",
+      # "minisig_sha256"}}}), posted VERBATIM via make promote-release's
+      # PROMOTE_PAYLOAD passthrough, so the server CAS-compares exactly the
+      # hashes this workflow verified, inside its locked transaction. This is
+      # the moment $VERSION becomes selectable by install.sh and
+      # `oak upgrade`'s `latest` resolution. Promote is IDEMPOTENT (identical
+      # map → 200 already_promoted); a CAS mismatch is a 409 whose
+      # platform/expected/actual detail the Makefile surfaces verbatim.
+      # Mode-branched: the resume/published modes CONFIRM the existing
+      # promotion via the shared strict predicate instead (those modes never
+      # rebuilt, so there is no verified payload to post — and nothing to
+      # promote).
+      - name: Promote release on oak.space
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          # Optional override; the Makefile defaults to https://oak.space.
+          OAK_URL: ${{ vars.OAK_URL }}
+        run: |
+          set -euo pipefail
+          BASE="${OAK_URL:-https://oak.space}"
+          source scripts/release-state.sh
+          # Strict post-promotion confirmation, shared by ALL modes: re-fetch
+          # /api/releases and require the shared predicate to say "promoted"
+          # (exactly six platforms, valid timestamps). An HTTP 200 from the
+          # promote call is NOT the postcondition — the re-queried state is.
+          confirm_promoted() {
+            local list="$RUNNER_TEMP/promote-confirm.json" code state
+            code=$(curl -sS -o "$list" -w '%{http_code}' -H "Authorization: Bearer $OAK_ADMIN_API_KEY" "$BASE/api/releases")
+            if [ "$code" != "200" ]; then
+              echo "::error::GET $BASE/api/releases returned HTTP $code (expected 200) while confirming promotion. Body:"
+              cat "$list" || true
+              return 1
+            fi
+            if ! state=$(release_promotion_state "$VERSION" "$list"); then
+              echo "::error::$VERSION's promotion state is invalid or ambiguous while confirming (details above) — failing closed. Operator action required."
+              return 1
+            fi
+            if [ "$state" != "promoted" ]; then
+              echo "::error::expected $VERSION to be fully promoted on $BASE, but the strict predicate says '$state'. Failing closed — operator action required."
+              return 1
+            fi
+            echo "Promotion confirmed: $VERSION is fully promoted on $BASE (strict predicate over the re-queried state)."
+          }
+          if [ "$MODE" = "fresh" ]; then
+            PAYLOAD_FILE="$RUNNER_TEMP/promote-payload.json"
+            if [ ! -s "$PAYLOAD_FILE" ]; then
+              echo "::error::the verification step did not produce $PAYLOAD_FILE — refusing to promote unverified hashes."
+              exit 1
+            fi
+            make promote-release \
+              VERSION="$VERSION" \
+              OAK_ADMIN_API_KEY="$OAK_ADMIN_API_KEY" \
+              PROMOTE_PAYLOAD="$PAYLOAD_FILE" \
+              ${OAK_URL:+OAK_URL="$OAK_URL"}
+            # The CAS promote returned success — but the flip gate is the
+            # re-queried server state, same as the resume/published modes.
+            confirm_promoted
+            # Defense-in-depth spot check, NOT a re-verification: staged bytes
+            # are content-addressed and immutable server-side, so the full
+            # byte comparison already happened pre-promote. The loop lives in
+            # scripts/release-state.sh (release_spot_check_sha256, regression-
+            # tested against right/wrong stub hashes): re-GET each platform's
+            # /sha256 endpoint (no downloads) and require it to equal the
+            # attested payload hash before anything goes live on GitHub.
+            if ! release_spot_check_sha256 "$VERSION" "$BASE" "$PAYLOAD_FILE"; then
+              echo "::error::post-promote /sha256 spot check failed (details above) — failing before the GitHub flip."
+              exit 1
+            fi
+            echo "Post-promote /sha256 spot check passed for all $(jq '.platforms | length' "$PAYLOAD_FILE") platforms."
+          else
+            # resume/published: nothing to promote (never rebuilt); the
+            # confirmation IS the step.
+            confirm_promoted
+          fi
+
+      # The last mutation of the workflow: everything is staged, verified, and
+      # promoted, so flip the invisible draft into the public release and mark
+      # it latest. This is the single moment $VERSION becomes visible to
+      # `oak upgrade` (GitHub /releases/latest); oak.space went selectable at
+      # promote, one step earlier, so the channels converge within this job or
+      # not at all. If this flip fails, re-run the workflow: every earlier step
+      # is retryable (staged re-uploads allowed, promote idempotent) and the
+      # run converges here again. On an already-published release (retry after
+      # an ambiguous post-publication failure) the edit is a no-op that
+      # re-asserts --latest — a live release is never demoted on the way here.
+      - name: Publish GitHub release (flip draft live)
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release edit "$VERSION" --draft=false --latest
+          echo "Published $VERSION to $GH_REPO (draft flipped live, marked latest)."
