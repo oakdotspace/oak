@@ -1,0 +1,92 @@
+# The Oak open-source workspace: the reusable `oak-core` library and the `oak`
+# CLI that builds on it, developed together as sibling crates.
+#
+#   core/ → oakvcs-core  (the VCS foundation; published to crates.io, usable
+#                         standalone — e.g. a Unity integration depends on just
+#                         this with `default-features = false`)
+#   cli/  → oakvcs-cli   (the `oak` binary)
+#
+# The closed-source server lives in a separate private repo (`oakspace`) and
+# consumes `oakvcs-core` from crates.io, so nothing here depends on it.
+[workspace]
+members = ["core", "cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.102.1"
+edition = "2021"
+authors = ["Oak Contributors"]
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# The sibling core crate, depended on by the CLI. `version` keeps the CLI
+# publishable (crates.io resolves `oakvcs-core` by version); `path` makes local
+# workspace builds resolve to ./core directly, so no `[patch.crates-io]` is
+# needed. This version must track `[workspace.package].version` above on every
+# release — the publish-crates workflow bumps both in lockstep.
+oak-core = { package = "oakvcs-core", version = "0.102.1", path = "core" }
+
+# Core dependencies
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+futures-util = "0.3"
+
+# HTTP
+axum = { version = "0.8", features = ["multipart"] }
+# `rustls-no-provider` (not `rustls`) keeps reqwest off the default aws-lc-rs
+# crypto backend, which pulls aws-lc-sys — a C/asm library needing NASM + CMake
+# + a C toolchain to build. That's a hard blocker for `cargo install oakvcs-cli`
+# and for the windows-msvc build. We pin `ring` instead (see the `rustls` dep
+# below) and install it as the process-default CryptoProvider at CLI startup
+# (cli/src/main.rs).
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "webpki-roots", "stream", "charset", "http2", "form", "query", "multipart", "gzip"] }
+# The crypto provider for reqwest's rustls. `ring` ships prebuilt assembly and
+# compiles cleanly on every release target — including windows-msvc — with no
+# C/NASM toolchain, unlike the default aws-lc-rs. Pulled into the CLI so it can
+# install the provider; see the reqwest note above.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+# Shell-completion script generation for `oak completions <shell>`. Kept in
+# lockstep with clap's major.minor so the derived `Command` stays compatible.
+clap_complete = "4.5"
+
+# TUI
+ratatui = "0.30"
+crossterm = "0.29"
+
+# TOML config
+toml = "1.1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Archive
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
+# Data parallelism (parallel working-dir hashing in the CLI scan)
+rayon = "1.10"
+
+# Regex matching (`oak log -G` pickaxe over added/removed diff lines)
+regex = "1.11"
+
+# Git interop (gitoxide)
+gix = { version = "0.81", default-features = false, features = ["sha1"] }
+
+# Progress bars
+indicatif = "0.18"
+
+# UUID generation
+uuid = { version = "1", features = ["v4"] }
+
+# Testing
+tempfile = "3.14"

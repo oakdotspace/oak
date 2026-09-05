@@ -1,0 +1,5449 @@
+use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use crate::hash::hash_bytes;
+use crate::{
+    Blob, Branch, BranchStatus, ChangeType, ChunkInfo, CloseReason, Commit, FileChange, FileMode,
+    Hash, Manifest, ManifestEntry, MetadataKey, OakError, Result, Tag, Tree, TreeEntry,
+    TreeEntryKind,
+};
+
+use crate::protocol::{BlobProofChunk, BlobProofDescriptor, BlobProofMappingPage};
+use crate::traits::{BlobSource, Repository, StatCacheEntry};
+
+#[derive(Debug, Clone)]
+pub struct ServeMappingProofRecord {
+    pub token: String,
+    pub request_digest: String,
+    pub status: String,
+    pub worker_token: Option<String>,
+    pub lease_expires_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub descriptors: Vec<BlobProofDescriptor>,
+    pub base_mapping_digests: Vec<Option<String>>,
+    pub mappings: Vec<std::collections::BTreeMap<u32, BlobProofChunk>>,
+    pub verified: Vec<String>,
+    pub missing: Vec<String>,
+}
+
+fn prune_serve_mapping_proofs(conn: &Connection, now: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM serve_mapping_proof_jobs
+         WHERE (status IN ('complete', 'conflict') AND updated_at < ?1)
+            OR (status = 'uploading' AND updated_at < ?2)",
+        params![
+            now - crate::protocol::STAGED_ACTIVE_SESSION_TTL_SECS,
+            now - crate::protocol::STAGED_ACTIVE_SESSION_TTL_SECS
+        ],
+    )
+    .map_err(|e| OakError::Database(e.to_string()))?;
+    Ok(())
+}
+
+fn load_serve_mapping_proof_header(
+    conn: &Connection,
+    token: &str,
+) -> Result<Option<ServeMappingProofRecord>> {
+    let row = conn
+        .query_row(
+            "SELECT token, request_digest, status, worker_token, lease_expires_at,
+                    created_at, updated_at
+             FROM serve_mapping_proof_jobs WHERE token = ?1",
+            params![token],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| OakError::Database(e.to_string()))?;
+    let Some((
+        token,
+        request_digest,
+        status,
+        worker_token,
+        lease_expires_at,
+        created_at,
+        updated_at,
+    )) = row
+    else {
+        return Ok(None);
+    };
+    let mut descriptors = Vec::new();
+    let mut bases = Vec::new();
+    let mut verified = Vec::new();
+    let mut missing = Vec::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT blob_index, hash, size, mapping_digest, total_chunks,
+                    base_mapping_digest, verified, missing
+             FROM serve_mapping_proof_blobs WHERE token = ?1 ORDER BY blob_index",
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+    let rows = stmt
+        .query_map(params![token], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, u32>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, bool>(6)?,
+                row.get::<_, bool>(7)?,
+            ))
+        })
+        .map_err(|e| OakError::Database(e.to_string()))?;
+    for row in rows {
+        let (index, hash, size, digest, total_chunks, base, is_verified, is_missing) =
+            row.map_err(|e| OakError::Database(e.to_string()))?;
+        if index as usize != descriptors.len() {
+            return Err(OakError::Database(
+                "Serve mapping proof blob indexes are not contiguous".to_string(),
+            ));
+        }
+        if is_verified {
+            verified.push(hash.clone());
+        }
+        if is_missing {
+            missing.push(hash.clone());
+        }
+        descriptors.push(BlobProofDescriptor {
+            hash,
+            size,
+            mapping_digest: digest,
+            total_chunks,
+        });
+        bases.push(base);
+    }
+    Ok(Some(ServeMappingProofRecord {
+        token,
+        request_digest,
+        status,
+        worker_token,
+        lease_expires_at,
+        created_at,
+        updated_at,
+        mappings: vec![std::collections::BTreeMap::new(); descriptors.len()],
+        descriptors,
+        base_mapping_digests: bases,
+        verified,
+        missing,
+    }))
+}
+
+const MIGRATION_BASELINE: &str = include_str!("migrations/sqlite/0000_baseline.sql");
+const MIGRATION_0001_RELAX_BRANCH_FKS_AND_MESSAGE: &str =
+    include_str!("migrations/sqlite/0001_relax_branch_fks_and_message.sql");
+const MIGRATION_0002_RELAX_COMMITS_PARENT_HASH_FK: &str =
+    include_str!("migrations/sqlite/0002_relax_commits_parent_hash_fk.sql");
+const MIGRATION_0003_STAT_CACHE: &str = include_str!("migrations/sqlite/0003_stat_cache.sql");
+const MIGRATION_0004_STAT_CACHE_CTIME: &str =
+    include_str!("migrations/sqlite/0004_stat_cache_ctime.sql");
+const MIGRATION_0005_MERGE_PARENT_INDEX: &str =
+    include_str!("migrations/sqlite/0005_merge_parent_index.sql");
+const MIGRATION_0006_DROP_REDUNDANT_TREE_ENTRIES_INDEX: &str =
+    include_str!("migrations/sqlite/0006_drop_redundant_tree_entries_index.sql");
+const MIGRATION_0007_BLOBS_CODEC: &str = include_str!("migrations/sqlite/0007_blobs_codec.sql");
+const MIGRATION_0008_TREES_CONTENT: &str = include_str!("migrations/sqlite/0008_trees_content.sql");
+const MIGRATION_0009_RELAX_BLOB_CHUNKS_FK: &str =
+    include_str!("migrations/sqlite/0009_relax_blob_chunks_fk.sql");
+const MIGRATION_0010_BRANCH_CLOSE_REASON: &str =
+    include_str!("migrations/sqlite/0010_branch_close_reason.sql");
+const MIGRATION_0011_SERVE_MAPPING_PROOFS: &str =
+    include_str!("migrations/sqlite/0011_serve_mapping_proofs.sql");
+
+/// SQLite-backed repository for local storage
+pub struct SqliteRepository {
+    conn: Mutex<Connection>,
+}
+
+/// One row per migration. Mirrors the structure on the postgres side. New
+/// migrations append to `MIGRATIONS` below; existing entries are immutable
+/// once shipped.
+struct Migration {
+    version: &'static str,
+    sql: &'static str,
+    required: bool,
+}
+
+/// Canonical ordering of migrations. Migrations 001..011 were squashed into
+/// `0000_baseline` on 2026-05-05; the `migration_already_applied` heuristic
+/// recognises previously-migrated repositories and marks the baseline as
+/// applied without re-running its DDL.
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: "0000_baseline",
+        sql: MIGRATION_BASELINE,
+        required: true,
+    },
+    Migration {
+        version: "0001_relax_branch_fks_and_message",
+        sql: MIGRATION_0001_RELAX_BRANCH_FKS_AND_MESSAGE,
+        required: true,
+    },
+    Migration {
+        version: "0002_relax_commits_parent_hash_fk",
+        sql: MIGRATION_0002_RELAX_COMMITS_PARENT_HASH_FK,
+        required: true,
+    },
+    Migration {
+        version: "0003_stat_cache",
+        sql: MIGRATION_0003_STAT_CACHE,
+        required: true,
+    },
+    Migration {
+        version: "0004_stat_cache_ctime",
+        sql: MIGRATION_0004_STAT_CACHE_CTIME,
+        required: true,
+    },
+    Migration {
+        version: "0005_merge_parent_index",
+        sql: MIGRATION_0005_MERGE_PARENT_INDEX,
+        required: true,
+    },
+    Migration {
+        version: "0006_drop_redundant_tree_entries_index",
+        sql: MIGRATION_0006_DROP_REDUNDANT_TREE_ENTRIES_INDEX,
+        required: true,
+    },
+    Migration {
+        version: "0007_blobs_codec",
+        sql: MIGRATION_0007_BLOBS_CODEC,
+        required: true,
+    },
+    Migration {
+        version: "0008_trees_content",
+        sql: MIGRATION_0008_TREES_CONTENT,
+        required: true,
+    },
+    Migration {
+        version: "0009_relax_blob_chunks_fk",
+        sql: MIGRATION_0009_RELAX_BLOB_CHUNKS_FK,
+        required: true,
+    },
+    Migration {
+        version: "0010_branch_close_reason",
+        sql: MIGRATION_0010_BRANCH_CLOSE_REASON,
+        required: true,
+    },
+    Migration {
+        version: "0011_serve_mapping_proofs",
+        sql: MIGRATION_0011_SERVE_MAPPING_PROOFS,
+        required: true,
+    },
+];
+
+/// zstd level for at-rest compression. 3 is the default — fast, and tree
+/// content / source blobs are highly compressible, so a higher level buys
+/// little for the per-write cost during bulk import.
+const ZSTD_LEVEL: i32 = 3;
+
+/// `blobs.codec` markers.
+const CODEC_RAW: i64 = 0;
+const CODEC_ZSTD: i64 = 1;
+
+fn zstd_compress(data: &[u8]) -> Result<Vec<u8>> {
+    zstd::encode_all(data, ZSTD_LEVEL)
+        .map_err(|e| OakError::Database(format!("zstd compress: {e}")))
+}
+
+fn zstd_decompress(data: &[u8]) -> Result<Vec<u8>> {
+    zstd::decode_all(data).map_err(|e| OakError::Database(format!("zstd decompress: {e}")))
+}
+
+/// Encode blob content for storage: zstd when it actually shrinks, else raw.
+/// Returns the bytes to store and the codec marker. Hashing is always over the
+/// plaintext, so this choice never affects a blob's content-addressed identity.
+fn encode_blob(content: &[u8]) -> Result<(std::borrow::Cow<'_, [u8]>, i64)> {
+    let compressed = zstd_compress(content)?;
+    if compressed.len() < content.len() {
+        Ok((std::borrow::Cow::Owned(compressed), CODEC_ZSTD))
+    } else {
+        Ok((std::borrow::Cow::Borrowed(content), CODEC_RAW))
+    }
+}
+
+/// Decode stored blob content given its codec marker.
+fn decode_blob(content: Vec<u8>, codec: i64) -> Result<Vec<u8>> {
+    if codec == CODEC_ZSTD {
+        zstd_decompress(&content)
+    } else {
+        Ok(content)
+    }
+}
+
+/// Insert a tree in the new on-disk format (migration 0008): its canonical hash
+/// preimage, zstd-compressed, as a single `trees.content` row — no per-entry
+/// `tree_entries` rows. `conn` may be a plain connection, a transaction, or a
+/// savepoint (all deref to `Connection`).
+fn insert_tree_row(conn: &Connection, tree: &Tree) -> Result<()> {
+    let canonical = Tree::new(tree.entries.clone())?;
+    if canonical.hash != tree.hash {
+        return Err(OakError::InvalidHash(format!(
+            "tree {} does not match content hash {}",
+            tree.hash, canonical.hash
+        )));
+    }
+    let content = zstd_compress(&canonical.canonical_bytes())?;
+    conn.execute(
+        "INSERT OR IGNORE INTO trees (hash, content) VALUES (?1, ?2)",
+        params![canonical.hash.as_str(), content],
+    )
+    .map_err(|e| OakError::Database(e.to_string()))?;
+    Ok(())
+}
+
+/// Read a legacy tree (one stored as `tree_entries` rows, i.e. `trees.content`
+/// is NULL). Used as the fallback path in `get_tree` for repos written before
+/// migration 0008 / not yet compacted.
+fn read_tree_entries(conn: &Connection, hash: &Hash) -> Result<Tree> {
+    let mut stmt = conn
+        .prepare("SELECT name, kind, hash, mode FROM tree_entries WHERE tree_hash = ?1")
+        .map_err(|e| OakError::Database(e.to_string()))?;
+
+    let mut entries: Vec<TreeEntry> = stmt
+        .query_map(params![hash.as_str()], |row| {
+            let name: String = row.get(0)?;
+            let kind_str: String = row.get(1)?;
+            let entry_hash: String = row.get(2)?;
+            let mode_str: String = row.get(3)?;
+
+            let kind = match kind_str.as_str() {
+                "tree" => TreeEntryKind::Tree,
+                _ => TreeEntryKind::Blob,
+            };
+            let mode = match mode_str.as_str() {
+                "executable" => FileMode::Executable,
+                "symlink" => FileMode::Symlink,
+                _ => FileMode::Regular,
+            };
+            Ok(TreeEntry {
+                name,
+                kind,
+                hash: Hash(entry_hash),
+                mode,
+            })
+        })
+        .map_err(|e| OakError::Database(e.to_string()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| OakError::Database(e.to_string()))?;
+
+    // Re-sort to match Tree::new canonical ordering (PK guarantees uniqueness,
+    // not row order).
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(Tree {
+        hash: hash.clone(),
+        entries,
+    })
+}
+
+fn table_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        params![name],
+        |row| row.get(0),
+    )
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| OakError::Database(e.to_string()))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|e| OakError::Database(e.to_string()))?;
+    while let Some(row) = rows.next().map_err(|e| OakError::Database(e.to_string()))? {
+        let name: String = row.get(1).map_err(|e| OakError::Database(e.to_string()))?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Heuristic: has this migration already been applied? A positive result
+/// lets the runner record the version without re-executing its DDL — used
+/// when an existing repository (created under the pre-squash chain) is
+/// opened by a build that only knows about the baseline.
+fn migration_already_applied(version: &str, conn: &Connection) -> Result<bool> {
+    match version {
+        // Baseline is "applied" iff the schema already has the canonical
+        // `commits` table — created by the original 001_initial and never
+        // dropped, so its presence implies the squashed baseline's effects
+        // are already in place.
+        "0000_baseline" => {
+            table_exists(conn, "commits").map_err(|e| OakError::Database(e.to_string()))
+        }
+        // 0001 rebuilds `commits`, `branches`, `branch_heads` to drop the
+        // strict FKs on branch_name/parent_branch and to make
+        // `commits.message` nullable. A freshly-created DB (built from the
+        // current `0000_baseline`) already has the relaxed schema, so the
+        // migration is a no-op there. Detect that case by checking whether
+        // the stored CREATE TABLE for `commits` still has `message TEXT
+        // NOT NULL` — the marker of the pre-relax schema.
+        "0001_relax_branch_fks_and_message" => {
+            let sql: Option<String> = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='commits'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            // No `commits` table at all means the baseline hasn't run yet;
+            // leave to the baseline migration to set up. If `commits` is
+            // present and `message` is already nullable, the relax-pass is
+            // implicit and we mark this version applied without re-running.
+            Ok(sql
+                .map(|s| !s.contains("message TEXT NOT NULL"))
+                .unwrap_or(false))
+        }
+        // 0002 rebuilds `commits` to drop the FK on `parent_hash`. The
+        // current baseline still has that FK, so a freshly-applied
+        // baseline always needs this migration to run; only DBs that have
+        // already been migrated (the stored `commits` CREATE TABLE no
+        // longer mentions a FOREIGN KEY clause for parent_hash) should
+        // mark this version applied without re-running.
+        "0002_relax_commits_parent_hash_fk" => {
+            let sql: Option<String> = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='commits'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            Ok(sql
+                .map(|s| !s.contains("FOREIGN KEY (parent_hash)"))
+                .unwrap_or(false))
+        }
+        // These migrations are single ADD COLUMN statements. If a repository
+        // was already upgraded but missed the corresponding tracker row, the
+        // column is the authoritative marker; re-running the ALTER would fail
+        // with "duplicate column name" and block opening the repo.
+        "0007_blobs_codec" => column_exists(conn, "blobs", "codec"),
+        "0008_trees_content" => column_exists(conn, "trees", "content"),
+        "0010_branch_close_reason" => column_exists(conn, "branches", "close_reason"),
+        _ => Ok(false),
+    }
+}
+
+fn run_migrations(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+            succeeded INTEGER NOT NULL DEFAULT 1
+        )",
+    )
+    .map_err(|e| OakError::Database(e.to_string()))?;
+
+    for m in MIGRATIONS {
+        let already: Option<i64> = conn
+            .query_row(
+                "SELECT succeeded FROM schema_migrations WHERE version = ?1",
+                params![m.version],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        if already == Some(1) {
+            continue;
+        }
+
+        // Tracker doesn't know about this migration. If the schema already
+        // reflects it (squashed baseline running against a database that
+        // was migrated under the old per-step chain), mark applied without
+        // re-running the DDL.
+        if migration_already_applied(m.version, conn)? {
+            conn.execute(
+                "INSERT INTO schema_migrations (version, succeeded) VALUES (?1, 1)
+                 ON CONFLICT(version) DO UPDATE SET succeeded = 1",
+                params![m.version],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+            continue;
+        }
+
+        match conn.execute_batch(m.sql) {
+            Ok(_) => {
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, succeeded) VALUES (?1, 1)
+                     ON CONFLICT(version) DO UPDATE SET succeeded = 1",
+                    params![m.version],
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            }
+            Err(e) if m.required => {
+                return Err(OakError::Database(format!(
+                    "migration {} failed: {}",
+                    m.version, e
+                )));
+            }
+            Err(_) => {
+                // Best-effort migration — record as attempted so we don't
+                // retry every connect, but don't fail.
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, succeeded) VALUES (?1, 0)
+                     ON CONFLICT(version) DO NOTHING",
+                    params![m.version],
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Restrict a freshly-created repo database to owner-only access (`0600`).
+///
+/// The repo `oak.db` can hold the user's API token (persisted on `oak clone`
+/// / `oak create`), so it must not land at the umask default (typically
+/// `0644`, world-readable) inside the working tree — mirroring the `0600`
+/// handling of `~/.oak/credentials`. No-op on non-Unix; best-effort (a chmod
+/// failure must not break opening the repo).
+fn harden_db_file_permissions(db_path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(db_path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = db_path;
+    }
+}
+
+impl SqliteRepository {
+    /// Open or create a SQLite repository at the given path
+    pub fn open(db_path: &Path) -> Result<Self> {
+        let conn = Connection::open(db_path).map_err(|e| OakError::Database(e.to_string()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        harden_db_file_permissions(db_path);
+
+        // Enable WAL mode for concurrent multi-process access
+        conn.execute_batch("PRAGMA journal_mode=WAL;")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        run_migrations(&conn)?;
+
+        Ok(SqliteRepository {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    /// Open or create a SQLite repository at the given path with foreign-key
+    /// enforcement disabled.
+    ///
+    /// Used by `oak mount` for its lazy blob cache: the mount stores a
+    /// manifest whose entries reference blobs that haven't been fetched
+    /// yet. The default schema declares `manifest_entries.blob_hash` as a
+    /// foreign key to `blobs(hash)`; rusqlite enables enforcement by
+    /// default, so inserts would fail. The mount cache is a private,
+    /// per-mount store — relaxing FK enforcement is safe there because
+    /// nothing else points at it.
+    pub fn open_relaxed(db_path: &Path) -> Result<Self> {
+        let conn = Connection::open(db_path).map_err(|e| OakError::Database(e.to_string()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        harden_db_file_permissions(db_path);
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=OFF;")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        run_migrations(&conn)?;
+        Ok(SqliteRepository {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    pub fn database_path(&self) -> Result<PathBuf> {
+        let conn = self.conn.lock().unwrap();
+        conn.path()
+            .map(PathBuf::from)
+            .ok_or_else(|| OakError::Database("repository is not file-backed".to_string()))
+    }
+
+    pub fn checkpoint_wal_truncate(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let (busy, log_frames, checkpointed): (i64, i64, i64) = conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        if busy != 0 || log_frames != checkpointed {
+            return Err(OakError::Database(format!(
+                "WAL checkpoint remained busy ({checkpointed}/{log_frames} frames)"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Toggle foreign-key enforcement on the open connection.
+    ///
+    /// The server's PostgreSQL schema is more permissive than the client's
+    /// SQLite schema: `parent_branch` and `parent_hash` are unenforced on the
+    /// server but FK-checked here. Bulk imports (e.g. `oak clone`) need to relax
+    /// enforcement so that legitimate server data — branches whose parent has
+    /// been deleted, or commits whose timestamp ordering doesn't match
+    /// topology — can be ingested. Always re-enable after the bulk load so
+    /// subsequent normal operations stay validated.
+    pub fn set_foreign_keys(&self, enabled: bool) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let pragma = if enabled {
+            "PRAGMA foreign_keys=ON;"
+        } else {
+            "PRAGMA foreign_keys=OFF;"
+        };
+        conn.execute_batch(pragma)
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Replace cached branch metadata with an authoritative remote row.
+    ///
+    /// `store_branch` is insert-only because local callers often create a
+    /// placeholder branch row before later local edits. Remote refresh paths
+    /// have the opposite contract: the server row is authoritative metadata and
+    /// stale local rows must not survive into follow-up pushes.
+    pub fn upsert_branch_metadata(&self, branch: &Branch) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO branches (name, description, parent_branch, status, close_reason, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT(name) DO UPDATE SET \
+               description = excluded.description, \
+               parent_branch = excluded.parent_branch, \
+               status = excluded.status, \
+               close_reason = excluded.close_reason, \
+               created_at = excluded.created_at",
+            params![
+                branch.name,
+                branch.description,
+                branch.parent_branch,
+                branch.status.as_str(),
+                branch.close_reason.as_ref().map(|r| r.as_str()),
+                branch.created_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Begin a relaxed-durability transaction for a bulk ingest (clone / pull).
+    ///
+    /// Lowers `synchronous` to `NORMAL` and opens a transaction, so the many
+    /// per-object INSERTs that follow commit as a batch instead of fsync-ing
+    /// once per statement. The default `synchronous=FULL` in WAL mode fsyncs
+    /// on every auto-commit, and the clone ingest writes each chunk, blob,
+    /// `blob_chunks` row, tree, and commit as its own statement — so that
+    /// per-statement fsync dominates clone time on repos with many files.
+    /// Subsequent `store_*` calls join this open transaction (SQLite leaves
+    /// auto-commit mode while a manual `BEGIN` is active).
+    ///
+    /// Pair with [`Self::bulk_flush`] (called periodically to bound WAL
+    /// growth on a large import) and exactly one of [`Self::bulk_commit`] /
+    /// [`Self::bulk_rollback`]. Single-writer only: the caller must not issue
+    /// writes through another handle to the same database while the batch is
+    /// open, or that write will silently join — and ride the fate of — this
+    /// transaction.
+    pub fn bulk_begin(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("PRAGMA synchronous=NORMAL; BEGIN;")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Commit the current bulk batch and immediately open the next, so a long
+    /// import doesn't accumulate its entire dataset in the WAL before a single
+    /// final commit. Cheap under `synchronous=NORMAL` — no fsync until the
+    /// next checkpoint.
+    pub fn bulk_flush(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("COMMIT; BEGIN;")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Commit the bulk transaction and restore full durability.
+    pub fn bulk_commit(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("COMMIT; PRAGMA synchronous=FULL;")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Roll back an in-flight bulk transaction and restore full durability.
+    /// Best-effort, for the error path so a failed import doesn't leave a
+    /// dangling transaction or a half-applied batch behind.
+    pub fn bulk_rollback(&self) {
+        if let Ok(conn) = self.conn.lock() {
+            let _ = conn.execute_batch("ROLLBACK; PRAGMA synchronous=FULL;");
+        }
+    }
+
+    /// Begin a normal durable write transaction.
+    ///
+    /// Unlike [`Self::bulk_begin`], this deliberately leaves SQLite's
+    /// durability pragmas alone. Use it for small publication steps where the
+    /// caller needs many repository setters to become observable as one unit.
+    pub fn write_txn_begin(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Commit a transaction opened with [`Self::write_txn_begin`].
+    pub fn write_txn_commit(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("COMMIT;")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Roll back a transaction opened with [`Self::write_txn_begin`].
+    pub fn write_txn_rollback(&self) {
+        if let Ok(conn) = self.conn.lock() {
+            let _ = conn.execute_batch("ROLLBACK;");
+        }
+    }
+
+    pub fn load_serve_mapping_proof_header(
+        &self,
+        token: &str,
+    ) -> Result<Option<ServeMappingProofRecord>> {
+        let conn = self.conn.lock().unwrap();
+        prune_serve_mapping_proofs(&conn, chrono::Utc::now().timestamp())?;
+        load_serve_mapping_proof_header(&conn, token)
+    }
+
+    pub fn find_serve_mapping_proof_by_request_digest(
+        &self,
+        request_digest: &str,
+    ) -> Result<Option<ServeMappingProofRecord>> {
+        let conn = self.conn.lock().unwrap();
+        prune_serve_mapping_proofs(&conn, chrono::Utc::now().timestamp())?;
+        let token: Option<String> = conn
+            .query_row(
+                "SELECT token FROM serve_mapping_proof_jobs WHERE request_digest = ?1",
+                params![request_digest],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        token
+            .as_deref()
+            .map(|token| load_serve_mapping_proof_header(&conn, token))
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    pub fn serve_mapping_proof_terminal_code(&self, token: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT terminal_code FROM serve_mapping_proof_jobs WHERE token = ?1",
+            params![token],
+            |row| row.get(0),
+        )
+        .optional()
+        .map(|value| value.flatten())
+        .map_err(|e| OakError::Database(e.to_string()))
+    }
+
+    pub fn list_resumable_serve_mapping_proofs(&self, now: i64) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        prune_serve_mapping_proofs(&conn, now)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT token FROM serve_mapping_proof_jobs
+                 WHERE status IN ('pending', 'running')
+                   AND COALESCE(lease_expires_at, 0) < ?1
+                 ORDER BY created_at, token
+                 LIMIT ?2",
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        let tokens = stmt
+            .query_map(
+                params![now, crate::protocol::STAGED_MAX_ACTIVE_SESSIONS_PER_REPO],
+                |row| row.get(0),
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(tokens)
+    }
+
+    pub fn serve_mapping_proof_complete_blobs(&self, token: &str) -> Result<Vec<u32>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT b.blob_index
+                 FROM serve_mapping_proof_blobs b
+                 LEFT JOIN serve_mapping_proof_pages p
+                   ON p.token = b.token AND p.blob_index = b.blob_index
+                 WHERE b.token = ?1
+                 GROUP BY b.blob_index, b.total_chunks
+                 HAVING COUNT(p.chunk_index) = b.total_chunks
+                    AND MIN(p.chunk_index) = 0
+                    AND MAX(p.chunk_index) = b.total_chunks - 1
+                 ORDER BY b.blob_index",
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        let complete = stmt
+            .query_map(params![token], |row| row.get(0))
+            .map_err(|e| OakError::Database(e.to_string()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(complete)
+    }
+
+    pub fn validate_serve_mapping_proof_pages(&self, token: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let job = load_serve_mapping_proof_header(&conn, token)?
+            .ok_or_else(|| OakError::InvalidArgument("mapping proof not found".to_string()))?;
+        for (blob_index, descriptor) in job.descriptors.iter().enumerate() {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT chunk_index, hash, offset, size
+                     FROM serve_mapping_proof_pages
+                     WHERE token = ?1 AND blob_index = ?2 ORDER BY chunk_index",
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            let mut rows = stmt
+                .query(params![token, blob_index as u32])
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            let mut expected_index = 0u32;
+            let mut expected_offset = 0u64;
+            let mut hasher = blake3::Hasher::new();
+            while let Some(row) = rows.next().map_err(|e| OakError::Database(e.to_string()))? {
+                let index: u32 = row.get(0).map_err(|e| OakError::Database(e.to_string()))?;
+                let hash: String = row.get(1).map_err(|e| OakError::Database(e.to_string()))?;
+                let offset: u64 = row.get(2).map_err(|e| OakError::Database(e.to_string()))?;
+                let size: u32 = row.get(3).map_err(|e| OakError::Database(e.to_string()))?;
+                Hash::from_hex(&hash)?;
+                if index != expected_index || offset != expected_offset || size == 0 {
+                    return Err(OakError::InvalidArgument(
+                        "mapping proof pages are incomplete or non-contiguous".to_string(),
+                    ));
+                }
+                hasher.update(&(index as u64).to_be_bytes());
+                hasher.update(&offset.to_be_bytes());
+                hasher.update(&size.to_be_bytes());
+                hasher.update(hash.as_bytes());
+                expected_index += 1;
+                expected_offset = expected_offset.checked_add(size as u64).ok_or_else(|| {
+                    OakError::InvalidArgument("mapping proof offsets overflow".to_string())
+                })?;
+            }
+            if expected_index != descriptor.total_chunks
+                || expected_offset != descriptor.size
+                || hasher.finalize().to_hex().as_str() != descriptor.mapping_digest
+            {
+                return Err(OakError::InvalidArgument(
+                    "mapping proof does not match its declared digest/size".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn visit_serve_mapping_proof_chunks(
+        &self,
+        token: &str,
+        blob_index: u32,
+        mut visit: impl FnMut(u32, BlobProofChunk) -> Result<()>,
+    ) -> Result<()> {
+        let path = self.database_path()?;
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT chunk_index, hash, offset, size
+                 FROM serve_mapping_proof_pages
+                 WHERE token = ?1 AND blob_index = ?2 ORDER BY chunk_index",
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![token, blob_index])
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        while let Some(row) = rows.next().map_err(|e| OakError::Database(e.to_string()))? {
+            visit(
+                row.get(0).map_err(|e| OakError::Database(e.to_string()))?,
+                BlobProofChunk {
+                    hash: row.get(1).map_err(|e| OakError::Database(e.to_string()))?,
+                    offset: row.get(2).map_err(|e| OakError::Database(e.to_string()))?,
+                    size: row.get(3).map_err(|e| OakError::Database(e.to_string()))?,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn load_serve_mapping_proofs(&self) -> Result<Vec<ServeMappingProofRecord>> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        let now = chrono::Utc::now().timestamp();
+        prune_serve_mapping_proofs(&tx, now)?;
+        let mut jobs = Vec::new();
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT token, request_digest, status, worker_token, lease_expires_at,
+                            created_at, updated_at
+                     FROM serve_mapping_proof_jobs ORDER BY created_at, token",
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                })
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            for row in rows {
+                let (
+                    token,
+                    request_digest,
+                    status,
+                    worker_token,
+                    lease_expires_at,
+                    created_at,
+                    updated_at,
+                ) = row.map_err(|e| OakError::Database(e.to_string()))?;
+                let mut descriptors = Vec::new();
+                let mut bases = Vec::new();
+                let mut mappings = Vec::new();
+                let mut verified = Vec::new();
+                let mut missing = Vec::new();
+                let mut blobs = tx
+                    .prepare(
+                        "SELECT blob_index, hash, size, mapping_digest, total_chunks,
+                                base_mapping_digest, verified, missing
+                         FROM serve_mapping_proof_blobs WHERE token = ?1 ORDER BY blob_index",
+                    )
+                    .map_err(|e| OakError::Database(e.to_string()))?;
+                let blob_rows = blobs
+                    .query_map(params![token], |row| {
+                        Ok((
+                            row.get::<_, u32>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, u64>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, u32>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                            row.get::<_, bool>(6)?,
+                            row.get::<_, bool>(7)?,
+                        ))
+                    })
+                    .map_err(|e| OakError::Database(e.to_string()))?;
+                for blob_row in blob_rows {
+                    let (index, hash, size, digest, total_chunks, base, is_verified, is_missing) =
+                        blob_row.map_err(|e| OakError::Database(e.to_string()))?;
+                    if index as usize != descriptors.len() {
+                        return Err(OakError::Database(
+                            "Serve mapping proof blob indexes are not contiguous".to_string(),
+                        ));
+                    }
+                    let mut mapping = std::collections::BTreeMap::new();
+                    let mut pages = tx
+                        .prepare(
+                            "SELECT chunk_index, hash, offset, size
+                             FROM serve_mapping_proof_pages
+                             WHERE token = ?1 AND blob_index = ?2 ORDER BY chunk_index",
+                        )
+                        .map_err(|e| OakError::Database(e.to_string()))?;
+                    let page_rows = pages
+                        .query_map(params![token, index], |row| {
+                            Ok((
+                                row.get::<_, u32>(0)?,
+                                BlobProofChunk {
+                                    hash: row.get(1)?,
+                                    offset: row.get(2)?,
+                                    size: row.get(3)?,
+                                },
+                            ))
+                        })
+                        .map_err(|e| OakError::Database(e.to_string()))?;
+                    for page in page_rows {
+                        let (chunk_index, chunk) =
+                            page.map_err(|e| OakError::Database(e.to_string()))?;
+                        mapping.insert(chunk_index, chunk);
+                    }
+                    if is_verified {
+                        verified.push(hash.clone());
+                    }
+                    if is_missing {
+                        missing.push(hash.clone());
+                    }
+                    descriptors.push(BlobProofDescriptor {
+                        hash,
+                        size,
+                        mapping_digest: digest,
+                        total_chunks,
+                    });
+                    bases.push(base);
+                    mappings.push(mapping);
+                }
+                jobs.push(ServeMappingProofRecord {
+                    token,
+                    request_digest,
+                    status,
+                    worker_token,
+                    lease_expires_at,
+                    created_at,
+                    updated_at,
+                    descriptors,
+                    base_mapping_digests: bases,
+                    mappings,
+                    verified,
+                    missing,
+                });
+            }
+        }
+        tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(jobs)
+    }
+
+    pub fn create_serve_mapping_proof(&self, record: &ServeMappingProofRecord) -> Result<String> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        let now = chrono::Utc::now().timestamp();
+        prune_serve_mapping_proofs(&tx, now)?;
+        if let Some(token) = tx
+            .query_row(
+                "SELECT token FROM serve_mapping_proof_jobs WHERE request_digest = ?1",
+                params![record.request_digest],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?
+        {
+            tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+            return Ok(token);
+        }
+        let active: usize = tx
+            .query_row(
+                "SELECT COUNT(*) FROM serve_mapping_proof_jobs
+                 WHERE status = 'uploading'
+                    OR (status IN ('pending', 'running')
+                        AND COALESCE(lease_expires_at, 0) >= ?1)",
+                params![now],
+                |row| row.get(0),
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        if active >= crate::protocol::STAGED_MAX_ACTIVE_SESSIONS_PER_REPO {
+            return Err(OakError::InvalidArgument(
+                "too many active mapping proofs for repository".to_string(),
+            ));
+        }
+        let inserted = tx
+            .execute(
+                "INSERT INTO serve_mapping_proof_jobs
+                 (token, request_digest, status, worker_token, lease_expires_at, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(request_digest) DO NOTHING",
+                params![
+                    record.token,
+                    record.request_digest,
+                    record.status,
+                    record.worker_token,
+                    record.lease_expires_at,
+                    record.created_at,
+                    record.updated_at
+                ],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        let token = if inserted == 0 {
+            tx.query_row(
+                "SELECT token FROM serve_mapping_proof_jobs WHERE request_digest = ?1",
+                params![record.request_digest],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?
+        } else {
+            for (index, descriptor) in record.descriptors.iter().enumerate() {
+                tx.execute(
+                    "INSERT INTO serve_mapping_proof_blobs
+                     (token, blob_index, hash, size, mapping_digest, total_chunks, base_mapping_digest)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        record.token,
+                        index as u32,
+                        descriptor.hash,
+                        descriptor.size,
+                        descriptor.mapping_digest,
+                        descriptor.total_chunks,
+                        record.base_mapping_digests[index]
+                    ],
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            }
+            record.token.clone()
+        };
+        tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(token)
+    }
+
+    pub fn touch_uploading_serve_mapping_proof(&self, token: &str, updated_at: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE serve_mapping_proof_jobs SET updated_at = ?2
+             WHERE token = ?1 AND status = 'uploading'",
+            params![token, updated_at],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn restart_missing_serve_mapping_proof(
+        &self,
+        token: &str,
+        updated_at: i64,
+    ) -> Result<bool> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        let changed = tx
+            .execute(
+                "UPDATE serve_mapping_proof_jobs
+                 SET status = 'uploading', worker_token = NULL, lease_expires_at = NULL,
+                     updated_at = ?2
+                 WHERE token = ?1 AND status = 'complete'
+                   AND EXISTS (
+                       SELECT 1 FROM serve_mapping_proof_blobs
+                       WHERE token = ?1 AND missing = 1
+                   )",
+                params![token, updated_at],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        if changed == 1 {
+            tx.execute(
+                "UPDATE serve_mapping_proof_blobs SET verified = 0, missing = 0
+                 WHERE token = ?1",
+                params![token],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        }
+        tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(changed == 1)
+    }
+
+    pub fn store_serve_mapping_proof_pages(
+        &self,
+        token: &str,
+        pages: &[BlobProofMappingPage],
+        updated_at: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        let status: String = tx
+            .query_row(
+                "SELECT status FROM serve_mapping_proof_jobs WHERE token = ?1",
+                params![token],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?
+            .ok_or_else(|| OakError::InvalidArgument("mapping proof not found".to_string()))?;
+        if !matches!(status.as_str(), "uploading" | "complete") {
+            return Err(OakError::InvalidArgument(
+                "mapping proof is not uploading".to_string(),
+            ));
+        }
+        for page in pages {
+            for (offset, chunk) in page.chunks.iter().enumerate() {
+                let index = page.first_chunk_index + offset as u32;
+                let existing: Option<(String, u64, u32)> = tx
+                    .query_row(
+                        "SELECT hash, offset, size FROM serve_mapping_proof_pages
+                         WHERE token = ?1 AND blob_index = ?2 AND chunk_index = ?3",
+                        params![token, page.blob_index, index],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()
+                    .map_err(|e| OakError::Database(e.to_string()))?;
+                if let Some(existing) = existing {
+                    if existing != (chunk.hash.clone(), chunk.offset, chunk.size) {
+                        return Err(OakError::InvalidArgument(
+                            "mapping proof page overlaps different metadata".to_string(),
+                        ));
+                    }
+                } else {
+                    if status == "complete" {
+                        return Err(OakError::InvalidArgument(
+                            "terminal mapping proof does not contain this page".to_string(),
+                        ));
+                    }
+                    tx.execute(
+                        "INSERT INTO serve_mapping_proof_pages
+                         (token, blob_index, chunk_index, hash, offset, size)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![
+                            token,
+                            page.blob_index,
+                            index,
+                            chunk.hash,
+                            chunk.offset,
+                            chunk.size
+                        ],
+                    )
+                    .map_err(|e| OakError::Database(e.to_string()))?;
+                }
+            }
+        }
+        if status == "complete" {
+            tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+            return Ok(());
+        }
+        let changed = tx
+            .execute(
+                "UPDATE serve_mapping_proof_jobs SET updated_at = ?2
+                 WHERE token = ?1 AND status = 'uploading'",
+                params![token, updated_at],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        if changed != 1 {
+            return Err(OakError::InvalidArgument(
+                "mapping proof is not uploading".to_string(),
+            ));
+        }
+        tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn claim_serve_mapping_proof(
+        &self,
+        token: &str,
+        worker_token: &str,
+        now: i64,
+        lease_expires_at: i64,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE serve_mapping_proof_jobs
+                 SET status = 'running', worker_token = ?2, lease_expires_at = ?4,
+                     updated_at = ?3
+                 WHERE token = ?1
+                   AND (status = 'uploading'
+                        OR (status IN ('pending', 'running')
+                            AND COALESCE(lease_expires_at, 0) < ?3))",
+                params![token, worker_token, now, lease_expires_at],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(changed == 1)
+    }
+
+    pub fn heartbeat_serve_mapping_proof(
+        &self,
+        token: &str,
+        worker_token: &str,
+        now: i64,
+        lease_expires_at: i64,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE serve_mapping_proof_jobs
+                 SET lease_expires_at = ?4, updated_at = ?3
+                 WHERE token = ?1 AND status = 'running' AND worker_token = ?2",
+                params![token, worker_token, now, lease_expires_at],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(changed == 1)
+    }
+
+    pub fn conflict_claimed_serve_mapping_proof(
+        &self,
+        token: &str,
+        worker_token: &str,
+        terminal_code: &str,
+        updated_at: i64,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE serve_mapping_proof_jobs
+                 SET status = 'conflict', terminal_code = ?3, worker_token = NULL,
+                     lease_expires_at = NULL, updated_at = ?4
+                 WHERE token = ?1 AND status = 'running' AND worker_token = ?2",
+                params![token, worker_token, terminal_code, updated_at],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(changed == 1)
+    }
+
+    pub fn complete_serve_mapping_proof(
+        &self,
+        token: &str,
+        verified: &[String],
+        missing: &[String],
+        updated_at: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let apply = |db: &Connection| -> Result<()> {
+            db.execute(
+                "UPDATE serve_mapping_proof_blobs SET verified = 0, missing = 0 WHERE token = ?1",
+                params![token],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+            for hash in verified {
+                db.execute(
+                    "UPDATE serve_mapping_proof_blobs SET verified = 1 WHERE token = ?1 AND hash = ?2",
+                    params![token, hash],
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            }
+            for hash in missing {
+                db.execute(
+                    "UPDATE serve_mapping_proof_blobs SET missing = 1 WHERE token = ?1 AND hash = ?2",
+                    params![token, hash],
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            }
+            db.execute(
+                "UPDATE serve_mapping_proof_jobs SET status = 'complete', updated_at = ?2
+                 WHERE token = ?1 AND status <> 'complete'",
+                params![token, updated_at],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+            Ok(())
+        };
+        if conn.is_autocommit() {
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            apply(&tx)?;
+            tx.commit().map_err(|e| OakError::Database(e.to_string()))
+        } else {
+            apply(&conn)
+        }
+    }
+
+    pub fn complete_claimed_serve_mapping_proof(
+        &self,
+        token: &str,
+        worker_token: &str,
+        verified: &[String],
+        missing: &[String],
+        updated_at: i64,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let apply = |db: &Connection| -> Result<()> {
+            let claimed: bool = db
+                .query_row(
+                    "SELECT 1 FROM serve_mapping_proof_jobs
+                     WHERE token = ?1 AND status = 'running' AND worker_token = ?2",
+                    params![token, worker_token],
+                    |_| Ok(true),
+                )
+                .optional()
+                .map_err(|e| OakError::Database(e.to_string()))?
+                .unwrap_or(false);
+            if !claimed {
+                return Err(OakError::Database(
+                    "mapping proof worker no longer owns the live claim".to_string(),
+                ));
+            }
+            db.execute(
+                "UPDATE serve_mapping_proof_blobs SET verified = 0, missing = 0 WHERE token = ?1",
+                params![token],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+            for hash in verified {
+                db.execute(
+                    "UPDATE serve_mapping_proof_blobs SET verified = 1 WHERE token = ?1 AND hash = ?2",
+                    params![token, hash],
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            }
+            for hash in missing {
+                db.execute(
+                    "UPDATE serve_mapping_proof_blobs SET missing = 1 WHERE token = ?1 AND hash = ?2",
+                    params![token, hash],
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            }
+            let changed = db
+                .execute(
+                    "UPDATE serve_mapping_proof_jobs
+                     SET status = 'complete', worker_token = NULL, lease_expires_at = NULL,
+                         updated_at = ?3
+                     WHERE token = ?1 AND status = 'running' AND worker_token = ?2",
+                    params![token, worker_token, updated_at],
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            if changed != 1 {
+                return Err(OakError::Database(
+                    "mapping proof worker lost its claim before completion".to_string(),
+                ));
+            }
+            Ok(())
+        };
+        apply(&conn)
+    }
+
+    pub fn activate_claimed_serve_mapping_proof_mappings(
+        &self,
+        token: &str,
+        worker_token: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        if conn.is_autocommit() {
+            return Err(OakError::Database(
+                "mapping proof activation requires an active write transaction".to_string(),
+            ));
+        }
+        let claimed: bool = conn
+            .query_row(
+                "SELECT 1 FROM serve_mapping_proof_jobs
+                 WHERE token = ?1 AND status = 'running' AND worker_token = ?2",
+                params![token, worker_token],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?
+            .unwrap_or(false);
+        if !claimed {
+            return Err(OakError::Database(
+                "mapping proof worker no longer owns the live claim".to_string(),
+            ));
+        }
+        let mut descriptor_stmt = conn
+            .prepare(
+                "SELECT blob_index, hash, size, mapping_digest
+                 FROM serve_mapping_proof_blobs WHERE token = ?1 ORDER BY blob_index",
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        let descriptors = descriptor_stmt
+            .query_map(params![token], |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| OakError::Database(e.to_string()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        drop(descriptor_stmt);
+        for (blob_index, hash, size, expected_digest) in descriptors {
+            let mut existing = conn
+                .prepare(
+                    "SELECT chunk_index, chunk_hash, offset, size FROM blob_chunks
+                     WHERE blob_hash = ?1 ORDER BY chunk_index",
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            let mut rows = existing
+                .query(params![hash])
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            let mut count = 0u64;
+            let mut hasher = blake3::Hasher::new();
+            while let Some(row) = rows.next().map_err(|e| OakError::Database(e.to_string()))? {
+                let index: u64 = row.get(0).map_err(|e| OakError::Database(e.to_string()))?;
+                let chunk_hash: String =
+                    row.get(1).map_err(|e| OakError::Database(e.to_string()))?;
+                let offset: u64 = row.get(2).map_err(|e| OakError::Database(e.to_string()))?;
+                let length: u32 = row.get(3).map_err(|e| OakError::Database(e.to_string()))?;
+                hasher.update(&index.to_be_bytes());
+                hasher.update(&offset.to_be_bytes());
+                hasher.update(&length.to_be_bytes());
+                hasher.update(chunk_hash.as_bytes());
+                count += 1;
+            }
+            drop(rows);
+            drop(existing);
+            if count != 0 {
+                if hasher.finalize().to_hex().as_str() != expected_digest {
+                    return Err(OakError::InvalidArgument(
+                        "blob acquired a different immutable mapping identity".to_string(),
+                    ));
+                }
+                continue;
+            }
+            conn.execute(
+                "INSERT OR IGNORE INTO blobs (hash, content, size, codec)
+                 VALUES (?1, X'', ?2, 0)",
+                params![hash, size],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+            let stored_size: u64 = conn
+                .query_row(
+                    "SELECT size FROM blobs WHERE hash = ?1",
+                    params![hash],
+                    |row| row.get(0),
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            if stored_size != size {
+                return Err(OakError::InvalidArgument(
+                    "blob metadata size changed before mapping activation".to_string(),
+                ));
+            }
+            conn.execute(
+                "INSERT INTO blob_chunks (blob_hash, chunk_hash, chunk_index, offset, size)
+                 SELECT ?3, hash, chunk_index, offset, size
+                 FROM serve_mapping_proof_pages
+                 WHERE token = ?1 AND blob_index = ?2
+                 ORDER BY chunk_index",
+                params![token, blob_index, hash],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Create an in-memory repository (for testing)
+    #[cfg(test)]
+    pub fn in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory().map_err(|e| OakError::Database(e.to_string()))?;
+        run_migrations(&conn)?;
+        Ok(SqliteRepository {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    /// Open a [`BulkImporter`] against the same database file.
+    ///
+    /// The importer holds its own connection (so it can manage long-lived
+    /// transactions independently of the regular repo's mutex), batches writes
+    /// across `batch_size` commits, and caches inserted-tree hashes in memory
+    /// to skip per-subtree EXISTS lookups during deeply repetitive imports
+    /// (e.g. `oak clone <git-url>` or `oak init` over an existing `.git`).
+    ///
+    /// The caller must not concurrently issue writes via the underlying
+    /// `SqliteRepository` until the importer is dropped or finished —
+    /// SQLite only allows one writer at a time, and a clash will block.
+    pub fn bulk_importer(&self, batch_size: usize) -> Result<BulkImporter> {
+        let conn = self.conn.lock().unwrap();
+        let path = conn
+            .path()
+            .ok_or_else(|| {
+                OakError::Database("bulk importer requires a file-backed connection".to_string())
+            })?
+            .to_string();
+        drop(conn);
+        BulkImporter::open(Path::new(&path), batch_size)
+    }
+
+    /// One-shot storage compaction. Converts the database to the compact
+    /// on-disk format and reclaims the freed space:
+    ///   1. Backfills `trees.content` for every legacy tree (one still stored as
+    ///      `tree_entries` rows), verifying each reconstructed tree re-hashes to
+    ///      its key before writing.
+    ///   2. Drops the now-unused `tree_entries` table (only if every tree has
+    ///      `content`, so the fallback path is never needed again).
+    ///   3. Re-compresses legacy raw blobs (`codec = 0`) that actually shrink.
+    ///   4. `VACUUM`s to shrink the file on disk.
+    ///
+    /// Idempotent: a second run finds nothing to backfill/recompress and just
+    /// VACUUMs. `VACUUM` needs transient free disk roughly equal to the final
+    /// database size.
+    pub fn compact_storage(&self) -> Result<CompactStats> {
+        let mut conn = self.conn.lock().unwrap();
+
+        // 1. Backfill legacy trees (content IS NULL) from tree_entries.
+        let legacy_trees: Vec<String> = {
+            let table = table_exists(&conn, "tree_entries")
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            if !table {
+                Vec::new() // already compacted away
+            } else {
+                let mut stmt = conn
+                    .prepare("SELECT hash FROM trees WHERE content IS NULL")
+                    .map_err(|e| OakError::Database(e.to_string()))?;
+                let rows = stmt
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .map_err(|e| OakError::Database(e.to_string()))?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|e| OakError::Database(e.to_string()))?
+            }
+        };
+
+        let mut trees_backfilled = 0u64;
+        if !legacy_trees.is_empty() {
+            let tx = conn
+                .transaction()
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            for h in &legacy_trees {
+                let hash = Hash(h.clone());
+                let tree = read_tree_entries(&tx, &hash)?;
+                // Integrity: the reconstructed tree must re-hash to its key.
+                if hash_bytes(&tree.canonical_bytes()) != hash {
+                    return Err(OakError::Database(format!(
+                        "tree {h} failed integrity check during compaction"
+                    )));
+                }
+                let content = zstd_compress(&tree.canonical_bytes())?;
+                tx.execute(
+                    "UPDATE trees SET content = ?2 WHERE hash = ?1",
+                    params![h, content],
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+                trees_backfilled += 1;
+            }
+            tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        }
+
+        // 2. Drop tree_entries once every tree has content.
+        let remaining_null: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM trees WHERE content IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        let tree_entries_dropped = if remaining_null == 0
+            && table_exists(&conn, "tree_entries").map_err(|e| OakError::Database(e.to_string()))?
+        {
+            conn.execute_batch("DROP TABLE IF EXISTS tree_entries;")
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            true
+        } else {
+            false
+        };
+
+        // 3. Re-compress legacy raw blobs that shrink.
+        let raw_blobs: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT hash FROM blobs WHERE codec = 0")
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| OakError::Database(e.to_string()))?
+        };
+
+        let mut blobs_recompressed = 0u64;
+        if !raw_blobs.is_empty() {
+            let tx = conn
+                .transaction()
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            for h in &raw_blobs {
+                let content: Vec<u8> = tx
+                    .query_row(
+                        "SELECT content FROM blobs WHERE hash = ?1",
+                        params![h],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| OakError::Database(e.to_string()))?;
+                let compressed = zstd_compress(&content)?;
+                if compressed.len() < content.len() {
+                    tx.execute(
+                        "UPDATE blobs SET content = ?2, codec = 1 WHERE hash = ?1",
+                        params![h, compressed],
+                    )
+                    .map_err(|e| OakError::Database(e.to_string()))?;
+                    blobs_recompressed += 1;
+                }
+            }
+            tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        }
+
+        // 4. VACUUM (must run outside any transaction) to reclaim freed pages.
+        conn.execute_batch("VACUUM;")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        Ok(CompactStats {
+            trees_backfilled,
+            tree_entries_dropped,
+            blobs_recompressed,
+        })
+    }
+
+    /// Replace a blob's chunk mapping wholesale. `store_blob_chunks` is
+    /// `INSERT OR IGNORE` (append-only), which is right for ingest but can't
+    /// correct an existing mapping — needed when a blob arrives mis-chunked
+    /// from a skewed server and the client re-chunks the repaired plaintext.
+    pub fn replace_blob_chunks(&self, blob_hash: &Hash, chunks: &[ChunkInfo]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        // Savepoint, not `transaction()`: pull ingest calls this inside an
+        // already-open `BulkTxn` (same rationale as `store_tree`).
+        let tx = conn
+            .savepoint()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        tx.execute(
+            "DELETE FROM blob_chunks WHERE blob_hash = ?1",
+            params![blob_hash.as_str()],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        for (index, chunk) in chunks.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO blob_chunks (blob_hash, chunk_hash, chunk_index, offset, size) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    blob_hash.as_str(),
+                    chunk.hash.as_str(),
+                    index as i64,
+                    chunk.offset as i64,
+                    chunk.length as i64,
+                ],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        }
+        tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Remove a cached chunk by content hash.
+    ///
+    /// Lazy hydration uses this to discard a previously-persisted corrupt row
+    /// before retrying the download. Blob-to-chunk mappings are intentionally
+    /// left intact: migration 0009 made those references metadata hints, so a
+    /// later hydration can still use them to fetch the missing bytes.
+    pub fn delete_chunk(&self, hash: &Hash) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM chunks WHERE hash = ?1", params![hash.as_str()])
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+}
+
+/// Outcome of [`SqliteRepository::compact_storage`].
+#[derive(Debug, Clone, Default)]
+pub struct CompactStats {
+    /// Legacy trees converted from `tree_entries` rows to `trees.content`.
+    pub trees_backfilled: u64,
+    /// Whether the `tree_entries` table was dropped (all trees now compact).
+    pub tree_entries_dropped: bool,
+    /// Legacy raw blobs re-compressed with zstd.
+    pub blobs_recompressed: u64,
+}
+
+/// Bulk-write helper for git import (and similar one-shot replays).
+///
+/// Wraps a private connection to the repo's SQLite database that:
+///   - Runs with relaxed durability pragmas (`synchronous=NORMAL`, larger cache,
+///     `temp_store=MEMORY`) — appropriate for a re-runnable bulk import.
+///   - Holds an outer transaction across `batch_size` commits, flushed
+///     automatically when the threshold is reached. This collapses thousands
+///     of per-commit `tx.commit()` fsyncs into a handful.
+///   - Caches inserted tree hashes in a `HashSet` so unchanged subtrees skip
+///     the SQL `SELECT EXISTS` lookup on every commit.
+///
+/// `finish()` flushes the final batch and must be called for the import to
+/// be durable. If the importer is dropped without finishing, the open
+/// transaction is rolled back.
+pub struct BulkImporter {
+    conn: Connection,
+    tree_cache: HashSet<Hash>,
+    uncommitted: usize,
+    batch_size: usize,
+    in_tx: bool,
+}
+
+impl BulkImporter {
+    fn open(db_path: &Path, batch_size: usize) -> Result<Self> {
+        let conn = Connection::open(db_path).map_err(|e| OakError::Database(e.to_string()))?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA temp_store=MEMORY;
+             PRAGMA cache_size=-262144;
+             BEGIN;",
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(BulkImporter {
+            conn,
+            tree_cache: HashSet::new(),
+            uncommitted: 0,
+            batch_size: batch_size.max(1),
+            in_tx: true,
+        })
+    }
+
+    /// Hash and insert a blob's content into the open batch.
+    pub fn put_blob(&mut self, content: Vec<u8>) -> Result<Hash> {
+        let blob = Blob::new(content);
+        let (stored, codec) = encode_blob(&blob.content)?;
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO blobs (hash, content, size, codec) VALUES (?1, ?2, ?3, ?4)",
+                params![blob.hash.as_str(), stored.as_ref(), blob.size as i64, codec],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(blob.hash)
+    }
+
+    /// Build a tree from manifest entries and insert all subtrees into the
+    /// open batch. Subtrees already inserted in this importer session are
+    /// skipped without a roundtrip; subtrees already present on disk from
+    /// prior work fall through to `INSERT OR IGNORE` and silently no-op.
+    pub fn put_tree(&mut self, entries: Vec<ManifestEntry>) -> Result<Hash> {
+        let built = crate::build_tree(&entries)?;
+        for tree in &built.trees {
+            if !self.tree_cache.insert(tree.hash.clone()) {
+                continue;
+            }
+            insert_tree_row(&self.conn, tree)?;
+        }
+        Ok(built.root_hash)
+    }
+
+    /// Insert a single, already-built tree node into the open batch, skipping
+    /// the write if this importer session already stored a tree with the same
+    /// hash (same dedup as [`put_tree`], one node at a time).
+    ///
+    /// Lets a caller that builds trees bottom-up — the git converter memoizing
+    /// on git tree oids — store each node as it's produced instead of handing
+    /// over a flat manifest and rebuilding the whole hierarchy per commit.
+    pub fn put_tree_node(&mut self, tree: &Tree) -> Result<()> {
+        if self.tree_cache.insert(tree.hash.clone()) {
+            insert_tree_row(&self.conn, tree)?;
+        }
+        Ok(())
+    }
+
+    /// Insert a commit (plus its `commit_files`, if any) and tick the batch
+    /// counter. Flushes the current transaction when the threshold is hit.
+    pub fn store_commit(&mut self, commit: &Commit) -> Result<()> {
+        let inserted = self
+            .conn
+            .execute(
+                "INSERT OR IGNORE INTO commits (hash, branch_name, parent_hash, merge_parent_hash, manifest_hash, author, message, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    commit.hash.as_str(),
+                    commit.branch_name,
+                    commit.parent_hash.as_ref().map(|h| h.as_str()),
+                    commit.merge_parent_hash.as_ref().map(|h| h.as_str()),
+                    commit.manifest_hash.as_str(),
+                    commit.author,
+                    commit.message,
+                    commit.timestamp.to_rfc3339(),
+                ],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        if inserted == 0 {
+            return Ok(());
+        }
+
+        for file in &commit.files {
+            let change_type_str = match file.change_type {
+                ChangeType::Added => "added",
+                ChangeType::Modified => "modified",
+                ChangeType::Deleted => "deleted",
+                ChangeType::Renamed => "renamed",
+            };
+            self.conn
+                .execute(
+                    "INSERT INTO commit_files (commit_hash, path, change_type, old_blob_hash, new_blob_hash, old_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        commit.hash.as_str(),
+                        file.path,
+                        change_type_str,
+                        file.old_blob_hash.as_ref().map(|h| h.as_str()),
+                        file.new_blob_hash.as_ref().map(|h| h.as_str()),
+                        file.old_path,
+                    ],
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+        }
+
+        self.uncommitted += 1;
+        if self.uncommitted >= self.batch_size {
+            self.flush_batch()?;
+        }
+        Ok(())
+    }
+
+    fn flush_batch(&mut self) -> Result<()> {
+        if !self.in_tx {
+            return Ok(());
+        }
+        self.conn
+            .execute_batch("COMMIT; BEGIN;")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        self.uncommitted = 0;
+        Ok(())
+    }
+
+    /// Commit the final batch. After this the importer is durable on disk.
+    pub fn finish(mut self) -> Result<()> {
+        if self.in_tx {
+            self.conn
+                .execute_batch("COMMIT;")
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            self.in_tx = false;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for BulkImporter {
+    fn drop(&mut self) {
+        if self.in_tx {
+            // Best-effort rollback so a panicked / errored import doesn't leave
+            // a half-applied batch behind. `finish()` clears `in_tx` first, so
+            // a clean finish path skips this.
+            let _ = self.conn.execute_batch("ROLLBACK;");
+        }
+    }
+}
+
+/// How much blob content a [`Repository::put_blob_sources`] pipeline may hold
+/// in memory at once (in-flight reads plus rows queued for insert).
+const BLOB_BATCH_BUDGET_BYTES: i64 = 64 * 1024 * 1024;
+
+/// Below this much total hinted content, `put_blob_sources` skips the
+/// streaming pipeline and stores the batch as one fused parallel pass plus a
+/// single transaction. The pipeline's spawned thread + channel + budget
+/// bookkeeping only pays for itself when there's enough content for reads and
+/// hashes to genuinely overlap the inserts (multi-megabyte batches); on a
+/// few-KB commit it's pure fixed cost per call — measurable as lost snapshot
+/// throughput when many tiny commits contend for the same repository.
+const BLOB_STREAMING_THRESHOLD_BYTES: i64 = 8 * 1024 * 1024;
+
+const BLOB_INSERT_SQL: &str =
+    "INSERT OR IGNORE INTO blobs (hash, content, size, codec) VALUES (?1, ?2, ?3, ?4)";
+
+/// What a source counts against the byte budget: its hinted size clamped to
+/// the whole budget (so an oversized file is admitted alone rather than
+/// never); an unknown size is treated as "could be huge".
+fn source_charge(source: &BlobSource) -> i64 {
+    source.size_hint.map_or(BLOB_BATCH_BUDGET_BYTES, |s| {
+        (s.min(i64::MAX as u64) as i64).min(BLOB_BATCH_BUDGET_BYTES)
+    })
+}
+
+/// Byte-budget gate bounding a `put_blob_sources` pipeline's in-flight
+/// content. Workers [`ByteBudget::acquire`] a source's size before reading it
+/// and the insert thread [`ByteBudget::release`]s after the row lands, so the
+/// total stays under the cap without imposing pre-partitioned batches (whose
+/// boundaries serialize — the tail batch overlaps nothing). [`ByteBudget::close`]
+/// unparks every waiter for teardown when the releaser is gone, so an aborted
+/// batch can't deadlock.
+struct ByteBudget {
+    remaining: std::sync::Mutex<i64>,
+    available: std::sync::Condvar,
+}
+
+impl ByteBudget {
+    fn new(cap: i64) -> Self {
+        Self {
+            remaining: std::sync::Mutex::new(cap),
+            available: std::sync::Condvar::new(),
+        }
+    }
+
+    /// Block until `n` bytes fit, then take them. Callers must clamp `n` to
+    /// the cap (a charge larger than the cap would wait forever).
+    fn acquire(&self, n: i64) {
+        let mut remaining = self.remaining.lock().unwrap();
+        while *remaining < n {
+            remaining = self.available.wait(remaining).unwrap();
+        }
+        *remaining -= n;
+    }
+
+    fn release(&self, n: i64) {
+        *self.remaining.lock().unwrap() += n;
+        self.available.notify_all();
+    }
+
+    /// Open the gate unconditionally so every parked `acquire` returns.
+    fn close(&self) {
+        *self.remaining.lock().unwrap() = i64::MAX;
+        self.available.notify_all();
+    }
+}
+
+impl Repository for SqliteRepository {
+    fn store_blob(&self, blob: &Blob) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let (stored, codec) = encode_blob(&blob.content)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO blobs (hash, content, size, codec) VALUES (?1, ?2, ?3, ?4)",
+            params![blob.hash.as_str(), stored.as_ref(), blob.size as i64, codec],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn put_blobs(&self, contents: Vec<Vec<u8>>) -> Result<Vec<Hash>> {
+        self.put_blob_sources(contents.into_iter().map(BlobSource::from_content).collect())
+    }
+
+    fn put_blob_sources(&self, sources: Vec<BlobSource>) -> Result<Vec<Hash>> {
+        if sources.is_empty() {
+            return Ok(Vec::new());
+        }
+        if sources.len() == 1 {
+            // A one-blob batch gains nothing from an explicit transaction;
+            // keep it a single autocommit insert like `put_blob`.
+            let content = (sources.into_iter().next().unwrap().read)()?;
+            return Ok(vec![self.put_blob(content)?]);
+        }
+
+        use rayon::prelude::*;
+
+        // Small batch (by hinted bytes): read + hash + encode fused per blob
+        // in one parallel pass, then insert everything in one transaction — a
+        // `put_blob` loop would pay an autocommit (WAL append + sync) per
+        // blob. The all-hashed-before-any-insert barrier is harmless at this
+        // size, and skipping the streaming pipeline below keeps a tiny
+        // commit's latency free of its thread/channel setup cost.
+        let total_hinted = sources
+            .iter()
+            .map(source_charge)
+            .fold(0i64, |acc, charge| acc.saturating_add(charge));
+        if total_hinted <= BLOB_STREAMING_THRESHOLD_BYTES {
+            let rows: Vec<(Hash, Vec<u8>, i64, i64)> = sources
+                .into_par_iter()
+                .map(|source| -> Result<(Hash, Vec<u8>, i64, i64)> {
+                    let blob = Blob::new((source.read)()?);
+                    let size = blob.size as i64;
+                    let (encoded, codec) = encode_blob(&blob.content)?;
+                    let stored = match encoded {
+                        std::borrow::Cow::Owned(v) => v,
+                        std::borrow::Cow::Borrowed(_) => blob.content,
+                    };
+                    Ok((blob.hash, stored, size, codec))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let mut conn = self.conn.lock().unwrap();
+            let tx = conn
+                .transaction()
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            {
+                let mut stmt = tx
+                    .prepare(BLOB_INSERT_SQL)
+                    .map_err(|e| OakError::Database(e.to_string()))?;
+                for (hash, stored, size, codec) in &rows {
+                    stmt.execute(params![hash.as_str(), stored, size, codec])
+                        .map_err(|e| OakError::Database(e.to_string()))?;
+                }
+            }
+            tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+            return Ok(rows.into_iter().map(|(hash, _, _, _)| hash).collect());
+        }
+
+        // Big batch: pipeline, not phases. Rayon workers read + hash + encode
+        // each source fused per blob (so one file's read overlaps another's
+        // BLAKE3/zstd) and stream finished rows over a channel to this
+        // thread, which inserts them all inside ONE transaction. There is no
+        // all-read or all-hash barrier anywhere: with a few large files the
+        // insert of the first overlaps the hash of the last, and with
+        // thousands of files the inserts run continuously behind the hashing
+        // instead of after it.
+        //
+        // Memory is bounded by `BLOB_BATCH_BUDGET_BYTES`: a worker admits a
+        // source's charge (see `source_charge`) before reading it, and the
+        // charge is released only after the row has been inserted and dropped.
+        let n = sources.len();
+        let budget = ByteBudget::new(BLOB_BATCH_BUDGET_BYTES);
+        type Row = (usize, Hash, Vec<u8>, i64, i64, i64);
+        let (sender, receiver) = std::sync::mpsc::channel::<Row>();
+
+        let mut hashes: Vec<Option<Hash>> = Vec::with_capacity(n);
+        hashes.resize_with(n, || None);
+
+        let (producer_result, consumer_result) = std::thread::scope(|scope| {
+            let budget_ref = &budget;
+            let producer = scope.spawn(move || -> Result<()> {
+                sources
+                    .into_par_iter()
+                    .enumerate()
+                    .try_for_each(|(idx, source)| -> Result<()> {
+                        let charge = source_charge(&source);
+                        budget_ref.acquire(charge);
+                        let blob = Blob::new((source.read)()?);
+                        let size = blob.size as i64;
+                        let (encoded, codec) = encode_blob(&blob.content)?;
+                        let stored = match encoded {
+                            std::borrow::Cow::Owned(v) => v,
+                            std::borrow::Cow::Borrowed(_) => blob.content,
+                        };
+                        sender
+                            .send((idx, blob.hash, stored, size, codec, charge))
+                            .map_err(|_| {
+                                OakError::Database("blob batch insert aborted".to_string())
+                            })
+                    })
+            });
+
+            let consumer_result = (|| -> Result<()> {
+                let mut conn = self.conn.lock().unwrap();
+                let tx = conn
+                    .transaction()
+                    .map_err(|e| OakError::Database(e.to_string()))?;
+                {
+                    let mut stmt = tx
+                        .prepare(BLOB_INSERT_SQL)
+                        .map_err(|e| OakError::Database(e.to_string()))?;
+                    for (idx, hash, stored, size, codec, charge) in &receiver {
+                        let inserted = stmt
+                            .execute(params![hash.as_str(), stored, size, codec])
+                            .map_err(|e| OakError::Database(e.to_string()));
+                        drop(stored);
+                        budget_ref.release(charge);
+                        inserted?;
+                        hashes[idx] = Some(hash);
+                    }
+                }
+                tx.commit().map_err(|e| OakError::Database(e.to_string()))
+            })();
+
+            // Teardown for the error path: this thread is the only budget
+            // releaser, so a worker could be parked in `acquire` forever once
+            // the insert loop has bailed. Closing the channel fails the sends
+            // and opening the budget unparks the waiters, so the producer
+            // drains with errors instead of deadlocking. Both are no-ops when
+            // everything succeeded (the producer already finished — that's
+            // what ended the insert loop).
+            drop(receiver);
+            budget.close();
+            let producer_result = match producer.join() {
+                Ok(result) => result,
+                Err(_) => Err(OakError::Database(
+                    "blob batch producer panicked".to_string(),
+                )),
+            };
+            (producer_result, consumer_result)
+        });
+        consumer_result?;
+        producer_result?;
+        Ok(hashes
+            .into_iter()
+            .map(|h| h.expect("every source yields exactly one inserted row"))
+            .collect())
+    }
+
+    fn get_blob(&self, hash: &Hash) -> Result<Option<Blob>> {
+        let conn = self.conn.lock().unwrap();
+        let result: Option<(Vec<u8>, i64, i64)> = conn
+            .query_row(
+                "SELECT content, size, codec FROM blobs WHERE hash = ?1",
+                params![hash.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        match result {
+            None => Ok(None),
+            Some((content, size, codec)) => Ok(Some(Blob {
+                hash: hash.clone(),
+                content: decode_blob(content, codec)?,
+                size: size as u64,
+            })),
+        }
+    }
+
+    fn has_blob(&self, hash: &Hash) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM blobs WHERE hash = ?1)",
+                params![hash.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(exists)
+    }
+
+    fn get_blob_size(&self, hash: &Hash) -> Result<Option<u64>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT size FROM blobs WHERE hash = ?1",
+            params![hash.as_str()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map(|size| size.map(|size| size as u64))
+        .map_err(|error| OakError::Database(error.to_string()))
+    }
+
+    /// Write a manifest as a tree. The hash of `manifest` is already the tree
+    /// root hash (computed by `Manifest::new` via `build_tree`), so this is
+    /// just a tree-store of the corresponding nested structure.
+    fn store_manifest(&self, manifest: &Manifest) -> Result<()> {
+        self.put_tree(manifest.entries.clone()).map(|_| ())
+    }
+
+    /// Read a manifest by hash. Reads from the tree tables.
+    fn get_manifest(&self, hash: &Hash) -> Result<Option<Manifest>> {
+        if self.has_tree(hash)? {
+            let entries = self.walk_tree(hash)?;
+            return Ok(Some(Manifest {
+                hash: hash.clone(),
+                entries,
+            }));
+        }
+        Ok(None)
+    }
+
+    // --- Tree operations ---
+
+    fn store_tree(&self, tree: &Tree) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        // Use a savepoint, not `transaction()`: clone/pull ingest calls this
+        // inside an already-open bulk transaction (`BulkTxn`), and SQLite
+        // rejects a nested `BEGIN` ("cannot start a transaction within a
+        // transaction"). A savepoint nests cleanly inside the bulk txn and, when
+        // there's no outer transaction (a standalone call), still commits on its
+        // own — so these writes stay atomic in both cases.
+        let tx = conn
+            .savepoint()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        insert_tree_row(&tx, tree)?;
+
+        tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn get_tree(&self, hash: &Hash) -> Result<Option<Tree>> {
+        if hash == &Tree::empty_hash() {
+            return Ok(Some(Tree::empty()));
+        }
+        let conn = self.conn.lock().unwrap();
+
+        // New format (migration 0008): a single compressed-content row.
+        // `content` is NULL for legacy trees still stored as tree_entries rows.
+        let row: Option<Option<Vec<u8>>> = conn
+            .query_row(
+                "SELECT content FROM trees WHERE hash = ?1",
+                params![hash.as_str()],
+                |r| r.get::<_, Option<Vec<u8>>>(0),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        match row {
+            None => Ok(None), // no such tree
+            Some(Some(content)) => {
+                let raw = zstd_decompress(&content)?;
+                let actual = hash_bytes(&raw);
+                if &actual != hash {
+                    return Err(OakError::InvalidHash(format!(
+                        "tree {} does not match stored content hash {}",
+                        hash, actual
+                    )));
+                }
+                Ok(Some(Tree::from_canonical_bytes(hash.clone(), &raw)?))
+            }
+            Some(None) => Ok(Some(read_tree_entries(&conn, hash)?)), // legacy fallback
+        }
+    }
+
+    fn has_tree(&self, hash: &Hash) -> Result<bool> {
+        if hash == &Tree::empty_hash() {
+            return Ok(true);
+        }
+        let conn = self.conn.lock().unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM trees WHERE hash = ?1)",
+                params![hash.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(exists)
+    }
+
+    /// Optimized `put_tree`: builds the nested tree, then inserts all tree
+    /// objects in a single transaction, skipping subtrees whose hash already
+    /// exists. This is the key write-path optimization for tree storage.
+    fn put_tree(&self, entries: Vec<ManifestEntry>) -> Result<Hash> {
+        let built = crate::build_tree(&entries)?;
+        let mut conn = self.conn.lock().unwrap();
+        // Savepoint, not `transaction()`: clone/pull ingest can call this
+        // while a bulk transaction is already open, and standalone tree writes
+        // still need this block to be all-or-nothing.
+        let tx = conn
+            .savepoint()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        for tree in &built.trees {
+            let already_present: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM trees WHERE hash = ?1)",
+                    params![tree.hash.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            if already_present {
+                continue;
+            }
+
+            insert_tree_row(&tx, tree)?;
+        }
+
+        tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(built.root_hash)
+    }
+
+    // --- Branch operations ---
+
+    fn close_branch(&self, name: &str, close_reason: Option<crate::CloseReason>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE branches SET status = ?1, close_reason = ?2 WHERE name = ?3",
+            params![
+                BranchStatus::Closed.as_str(),
+                close_reason.as_ref().map(|r| r.as_str()),
+                name,
+            ],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn update_branch_close_reason(
+        &self,
+        name: &str,
+        close_reason: crate::CloseReason,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE branches SET close_reason = ?1 WHERE name = ?2",
+            params![close_reason.as_str(), name],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn store_branch(&self, branch: &Branch) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO branches (name, description, parent_branch, status, close_reason, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                branch.name,
+                branch.description,
+                branch.parent_branch,
+                branch.status.as_str(),
+                branch.close_reason.as_ref().map(|r| r.as_str()),
+                branch.created_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn get_branch(&self, name: &str) -> Result<Option<Branch>> {
+        // (description, parent_branch, status, close_reason, created_at)
+        type BranchRow = (
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+            String,
+        );
+        let conn = self.conn.lock().unwrap();
+        let result: Option<BranchRow> = conn
+            .query_row(
+                "SELECT description, parent_branch, status, close_reason, created_at FROM branches WHERE name = ?1",
+                params![name],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        match result {
+            Some((description, parent_branch, status_str, close_reason_str, created_at_str)) => {
+                let status = BranchStatus::from_db_str(&status_str);
+                let close_reason = close_reason_str
+                    .as_deref()
+                    .map(CloseReason::parse)
+                    .transpose()?;
+                let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                    .map_err(|e| OakError::Database(e.to_string()))?
+                    .with_timezone(&chrono::Utc);
+                Ok(Some(Branch {
+                    name: name.to_string(),
+                    description,
+                    parent_branch,
+                    status,
+                    close_reason,
+                    created_at,
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn list_branches(&self) -> Result<Vec<Branch>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name, description, parent_branch, status, close_reason, created_at FROM branches ORDER BY created_at ASC")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        let branches = stmt
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let description: Option<String> = row.get(1)?;
+                let parent_branch: Option<String> = row.get(2)?;
+                let status_str: String = row.get(3)?;
+                let close_reason_str: Option<String> = row.get(4)?;
+                let created_at_str: String = row.get(5)?;
+                Ok((
+                    name,
+                    description,
+                    parent_branch,
+                    status_str,
+                    close_reason_str,
+                    created_at_str,
+                ))
+            })
+            .map_err(|e| OakError::Database(e.to_string()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        branches
+            .into_iter()
+            .map(
+                |(
+                    name,
+                    description,
+                    parent_branch,
+                    status_str,
+                    close_reason_str,
+                    created_at_str,
+                )| {
+                    let status = BranchStatus::from_db_str(&status_str);
+                    let close_reason = close_reason_str
+                        .as_deref()
+                        .map(CloseReason::parse)
+                        .transpose()?;
+                    let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                        .map_err(|e| OakError::Database(e.to_string()))?
+                        .with_timezone(&chrono::Utc);
+                    Ok(Branch {
+                        name,
+                        description,
+                        parent_branch,
+                        status,
+                        close_reason,
+                        created_at,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    fn update_branch_status(&self, name: &str, status: BranchStatus) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE branches SET status = ?1 WHERE name = ?2",
+            params![status.as_str(), name],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn update_branch_description(&self, name: &str, description: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE branches SET description = ?1 WHERE name = ?2",
+            params![description, name],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn rename_branch(&self, old_name: &str, new_name: &str) -> Result<()> {
+        if old_name == new_name {
+            return Ok(());
+        }
+        if new_name.is_empty() {
+            return Err(OakError::Database("new branch name cannot be empty".into()));
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        // Savepoint, not `transaction()`: pull publishes branch renames inside
+        // an already-open write transaction, while standalone branch rename
+        // still needs this block to be all-or-nothing.
+        let tx = conn
+            .savepoint()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        let exists: bool = tx
+            .query_row(
+                "SELECT 1 FROM branches WHERE name = ?1",
+                params![old_name],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?
+            .unwrap_or(false);
+        if !exists {
+            return Err(OakError::BranchNotFound(old_name.to_string()));
+        }
+
+        let conflict: bool = tx
+            .query_row(
+                "SELECT 1 FROM branches WHERE name = ?1
+                 UNION
+                 SELECT 1 FROM branch_heads WHERE branch_name = ?1",
+                params![new_name],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?
+            .unwrap_or(false);
+        if conflict {
+            return Err(OakError::BranchAlreadyExists(new_name.to_string()));
+        }
+
+        // Insert renamed row, repoint all references, then delete the old row.
+        // Insert-before-update keeps FK semantics correct if foreign_keys are
+        // ever turned on; the order below is safe with FKs OFF too.
+        tx.execute(
+            "INSERT INTO branches (name, description, parent_branch, status, close_reason, created_at) \
+             SELECT ?1, description, parent_branch, status, close_reason, created_at FROM branches WHERE name = ?2",
+            params![new_name, old_name],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+
+        tx.execute(
+            "UPDATE branches SET parent_branch = ?1 WHERE parent_branch = ?2",
+            params![new_name, old_name],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+
+        tx.execute(
+            "UPDATE commits SET branch_name = ?1 WHERE branch_name = ?2",
+            params![new_name, old_name],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+
+        tx.execute(
+            "UPDATE branch_heads SET branch_name = ?1 WHERE branch_name = ?2",
+            params![new_name, old_name],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+
+        tx.execute(
+            "UPDATE metadata SET value = ?1 WHERE key = ?2 AND value = ?3",
+            params![new_name, MetadataKey::CurrentBranch.as_str(), old_name],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+
+        tx.execute("DELETE FROM branches WHERE name = ?1", params![old_name])
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn delete_branch(&self, name: &str) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        tx.execute(
+            "DELETE FROM branch_heads WHERE branch_name = ?1",
+            params![name],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        tx.execute("DELETE FROM branches WHERE name = ?1", params![name])
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn get_branch_head(&self, name: &str) -> Result<Option<Hash>> {
+        let conn = self.conn.lock().unwrap();
+        let result: Option<String> = conn
+            .query_row(
+                "SELECT head_hash FROM branch_heads WHERE branch_name = ?1",
+                params![name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(result.map(Hash))
+    }
+
+    fn set_branch_head(&self, name: &str, hash: &Hash) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO branch_heads (branch_name, head_hash) VALUES (?1, ?2)",
+            params![name, hash.as_str()],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn reconcile_remote_merge_branch_state(
+        &self,
+        closed_branch: &str,
+        new_branch: &Branch,
+        main_head: &Hash,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        tx.execute(
+            "UPDATE branches SET status = ?1 WHERE name = ?2",
+            params![BranchStatus::Closed.as_str(), closed_branch],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        tx.execute(
+            "INSERT OR IGNORE INTO branches (name, description, parent_branch, status, close_reason, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                new_branch.name,
+                new_branch.description,
+                new_branch.parent_branch,
+                new_branch.status.as_str(),
+                new_branch.close_reason.as_ref().map(|r| r.as_str()),
+                new_branch.created_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        tx.execute(
+            "INSERT OR REPLACE INTO branch_heads (branch_name, head_hash) VALUES (?1, ?2)",
+            params![new_branch.name, main_head.as_str()],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        tx.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
+            params![MetadataKey::Head.as_str(), main_head.as_str()],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        tx.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
+            params![MetadataKey::CurrentBranch.as_str(), new_branch.name],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+
+        tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    // --- Commit operations ---
+
+    fn store_commit(&self, commit: &Commit) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        // Savepoint rather than `transaction()` for the same reason as
+        // `store_tree`: clone/pull's `store_pull_response` calls this inside an
+        // open `BulkTxn`, where a nested `BEGIN` would error. A savepoint nests
+        // there and still commits standalone.
+        let tx = conn
+            .savepoint()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        let inserted = tx
+            .execute(
+            "INSERT OR IGNORE INTO commits (hash, branch_name, parent_hash, merge_parent_hash, manifest_hash, author, message, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                commit.hash.as_str(),
+                commit.branch_name,
+                commit.parent_hash.as_ref().map(|h| h.as_str()),
+                commit.merge_parent_hash.as_ref().map(|h| h.as_str()),
+                commit.manifest_hash.as_str(),
+                commit.author,
+                commit.message,
+                commit.timestamp.to_rfc3339(),
+            ],
+        )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        if inserted != 0 {
+            for file in &commit.files {
+                let change_type_str = match file.change_type {
+                    ChangeType::Added => "added",
+                    ChangeType::Modified => "modified",
+                    ChangeType::Deleted => "deleted",
+                    ChangeType::Renamed => "renamed",
+                };
+
+                tx.execute(
+                    "INSERT INTO commit_files (commit_hash, path, change_type, old_blob_hash, new_blob_hash, old_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        commit.hash.as_str(),
+                        file.path,
+                        change_type_str,
+                        file.old_blob_hash.as_ref().map(|h| h.as_str()),
+                        file.new_blob_hash.as_ref().map(|h| h.as_str()),
+                        file.old_path,
+                    ],
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            }
+        }
+
+        tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn get_commit(&self, hash: &Hash) -> Result<Option<Commit>> {
+        let conn = self.conn.lock().unwrap();
+
+        #[allow(clippy::type_complexity)]
+        let result: Option<(String, Option<String>, Option<String>, String, String, Option<String>, String)> = conn
+            .query_row(
+                "SELECT branch_name, parent_hash, merge_parent_hash, manifest_hash, author, message, timestamp FROM commits WHERE hash = ?1",
+                params![hash.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        let (
+            branch_name,
+            parent_hash,
+            merge_parent_hash,
+            manifest_hash,
+            author,
+            message,
+            timestamp_str,
+        ) = match result {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        let mut stmt = conn
+            .prepare("SELECT path, change_type, old_blob_hash, new_blob_hash, old_path FROM commit_files WHERE commit_hash = ?1")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        let files: Vec<FileChange> = stmt
+            .query_map(params![hash.as_str()], |row| {
+                let path: String = row.get(0)?;
+                let change_type_str: String = row.get(1)?;
+                let old_blob_hash: Option<String> = row.get(2)?;
+                let new_blob_hash: Option<String> = row.get(3)?;
+                let old_path: Option<String> = row.get(4)?;
+
+                let change_type = match change_type_str.as_str() {
+                    "added" => ChangeType::Added,
+                    "deleted" => ChangeType::Deleted,
+                    "renamed" => ChangeType::Renamed,
+                    _ => ChangeType::Modified,
+                };
+
+                Ok(FileChange {
+                    path,
+                    change_type,
+                    old_blob_hash: old_blob_hash.map(Hash),
+                    new_blob_hash: new_blob_hash.map(Hash),
+                    old_path,
+                    old_mode: None,
+                    new_mode: None,
+                })
+            })
+            .map_err(|e| OakError::Database(e.to_string()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        let timestamp = chrono::DateTime::parse_from_rfc3339(&timestamp_str)
+            .map_err(|e| OakError::Database(e.to_string()))?
+            .with_timezone(&chrono::Utc);
+
+        Ok(Some(Commit {
+            hash: hash.clone(),
+            branch_name,
+            parent_hash: parent_hash.map(Hash),
+            merge_parent_hash: merge_parent_hash.map(Hash),
+            manifest_hash: Hash(manifest_hash),
+            author,
+            message,
+            timestamp,
+            files,
+        }))
+    }
+
+    fn has_commit(&self, hash: &Hash) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM commits WHERE hash = ?1",
+                params![hash.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(count > 0)
+    }
+
+    fn get_commits_for_branch(&self, branch_name: &str) -> Result<Vec<Commit>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT hash FROM commits WHERE branch_name = ?1 ORDER BY timestamp ASC")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        let hashes: Vec<String> = stmt
+            .query_map(params![branch_name], |row| row.get(0))
+            .map_err(|e| OakError::Database(e.to_string()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        drop(stmt);
+        drop(conn);
+
+        let mut commits = Vec::new();
+        for hash in hashes {
+            if let Some(edit) = self.get_commit(&Hash(hash))? {
+                commits.push(edit);
+            }
+        }
+        Ok(commits)
+    }
+
+    fn count_commits_for_branch(&self, branch_name: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM commits WHERE branch_name = ?1",
+                params![branch_name],
+                |row| row.get(0),
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(count as usize)
+    }
+
+    fn merge_child_exists(&self, branch_head: &Hash) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM commits WHERE merge_parent_hash = ?1)",
+                params![branch_head.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(exists)
+    }
+
+    fn get_commits_since(&self, branch_name: &str, since: Option<&Hash>) -> Result<Vec<Commit>> {
+        let all = self.get_commits_for_branch(branch_name)?;
+
+        match since {
+            None => Ok(all),
+            Some(since_hash) => {
+                let mut found = false;
+                let mut result = Vec::new();
+                for commit in &all {
+                    if &commit.hash == since_hash {
+                        found = true;
+                    } else if found {
+                        result.push(commit.clone());
+                    }
+                }
+                // If since_hash wasn't found in this branch's commits (e.g.
+                // it belongs to a different branch), return all commits —
+                // they are all new from the caller's perspective.
+                if !found {
+                    return Ok(all);
+                }
+                Ok(result)
+            }
+        }
+    }
+
+    fn get_all_commits(&self) -> Result<Vec<Commit>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT hash FROM commits ORDER BY timestamp ASC")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        let hashes: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| OakError::Database(e.to_string()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        drop(stmt);
+        drop(conn);
+
+        let mut commits = Vec::new();
+        for hash in hashes {
+            if let Some(edit) = self.get_commit(&Hash(hash))? {
+                commits.push(edit);
+            }
+        }
+        Ok(commits)
+    }
+
+    // --- Metadata ---
+
+    fn get_metadata(&self, key: MetadataKey) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let result: Option<String> = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![key.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(result)
+    }
+
+    fn set_metadata(&self, key: MetadataKey, value: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
+            params![key.as_str(), value],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    // --- Working-tree stat cache ---
+
+    fn load_stat_cache(&self) -> Result<HashMap<String, StatCacheEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT path, mtime_ns, ctime_ns, size, blob_hash FROM stat_cache")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    StatCacheEntry {
+                        mtime_ns: row.get(1)?,
+                        ctime_ns: row.get(2)?,
+                        size: row.get(3)?,
+                        blob_hash: Hash(row.get::<_, String>(4)?),
+                    },
+                ))
+            })
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (path, entry) = row.map_err(|e| OakError::Database(e.to_string()))?;
+            map.insert(path, entry);
+        }
+        Ok(map)
+    }
+
+    fn update_stat_cache(
+        &self,
+        upserts: &[(String, StatCacheEntry)],
+        removed: &[String],
+    ) -> Result<()> {
+        if upserts.is_empty() && removed.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        {
+            let mut upsert = tx
+                .prepare(
+                    "INSERT INTO stat_cache (path, mtime_ns, ctime_ns, size, blob_hash) VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(path) DO UPDATE SET
+                         mtime_ns = excluded.mtime_ns,
+                         ctime_ns = excluded.ctime_ns,
+                         size = excluded.size,
+                         blob_hash = excluded.blob_hash",
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            for (path, entry) in upserts {
+                upsert
+                    .execute(params![
+                        path,
+                        entry.mtime_ns,
+                        entry.ctime_ns,
+                        entry.size,
+                        entry.blob_hash.as_str()
+                    ])
+                    .map_err(|e| OakError::Database(e.to_string()))?;
+            }
+            let mut delete = tx
+                .prepare("DELETE FROM stat_cache WHERE path = ?1")
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            for path in removed {
+                delete
+                    .execute(params![path])
+                    .map_err(|e| OakError::Database(e.to_string()))?;
+            }
+        }
+        tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    // --- Tag operations ---
+
+    fn create_tag(&self, name: &str, commit_hash: &Hash) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO tags (name, commit_hash, created_at) VALUES (?1, ?2, ?3)",
+            params![name, commit_hash.as_str(), chrono::Utc::now().to_rfc3339()],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_tags(&self) -> Result<Vec<Tag>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name, commit_hash, created_at FROM tags ORDER BY created_at ASC")
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        let tags = stmt
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let commit_hash: String = row.get(1)?;
+                let created_at_str: String = row.get(2)?;
+                Ok((name, commit_hash, created_at_str))
+            })
+            .map_err(|e| OakError::Database(e.to_string()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        tags.into_iter()
+            .map(|(name, commit_hash, created_at_str)| {
+                let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                    .map_err(|e| OakError::Database(e.to_string()))?
+                    .with_timezone(&chrono::Utc);
+                Ok(Tag {
+                    name,
+                    commit_hash: Hash(commit_hash),
+                    created_at,
+                })
+            })
+            .collect()
+    }
+
+    fn delete_tag(&self, name: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM tags WHERE name = ?1", params![name])
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    // --- Chunk operations ---
+
+    fn store_chunk(&self, hash: &Hash, content: &[u8]) -> Result<()> {
+        let actual = hash_bytes(content);
+        if &actual != hash {
+            return Err(OakError::InvalidHash(format!(
+                "chunk {} does not match content hash {}",
+                hash, actual
+            )));
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO chunks (hash, content, size) VALUES (?1, ?2, ?3)",
+            params![hash.as_str(), content, content.len() as i64],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn get_chunk(&self, hash: &Hash) -> Result<Option<Vec<u8>>> {
+        let conn = self.conn.lock().unwrap();
+        let result: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT content FROM chunks WHERE hash = ?1",
+                params![hash.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(result)
+    }
+
+    fn copy_chunk_to_writer(
+        &self,
+        hash: &Hash,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Option<u64>> {
+        let conn = self.conn.lock().unwrap();
+        let row: Option<(i64, u64)> = conn
+            .query_row(
+                "SELECT rowid, size FROM chunks WHERE hash = ?1",
+                params![hash.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        let Some((rowid, size)) = row else {
+            return Ok(None);
+        };
+        let mut blob = conn
+            .blob_open(
+                rusqlite::DatabaseName::Main,
+                "chunks",
+                "content",
+                rowid,
+                true,
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        std::io::copy(&mut blob, writer)?;
+        Ok(Some(size))
+    }
+
+    fn has_chunk(&self, hash: &Hash) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM chunks WHERE hash = ?1)",
+                params![hash.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(exists)
+    }
+
+    fn store_blob_chunks(&self, blob_hash: &Hash, chunks: &[ChunkInfo]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        for (index, chunk) in chunks.iter().enumerate() {
+            conn.execute(
+                "INSERT OR IGNORE INTO blob_chunks (blob_hash, chunk_hash, chunk_index, offset, size) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    blob_hash.as_str(),
+                    chunk.hash.as_str(),
+                    index as i64,
+                    chunk.offset as i64,
+                    chunk.length as i64,
+                ],
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn get_blob_chunks(&self, blob_hash: &Hash) -> Result<Option<Vec<ChunkInfo>>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT chunk_hash, offset, size FROM blob_chunks WHERE blob_hash = ?1 ORDER BY chunk_index",
+            )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        let rows: Vec<ChunkInfo> = stmt
+            .query_map(params![blob_hash.as_str()], |row| {
+                let hash_str: String = row.get(0)?;
+                let offset: i64 = row.get(1)?;
+                let size: i64 = row.get(2)?;
+                Ok(ChunkInfo {
+                    hash: Hash(hash_str),
+                    offset: offset as u64,
+                    length: size as u32,
+                })
+            })
+            .map_err(|e| OakError::Database(e.to_string()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        if rows.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(rows))
+        }
+    }
+
+    fn atomic_commit(&self, manifest: &Manifest, commit: &Commit, branch_name: &str) -> Result<()> {
+        // Build tree structure outside the transaction so the lock is held briefly.
+        let built = crate::build_tree(&manifest.entries)?;
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        // Store every tree object (skipping ones already present).
+        for tree in &built.trees {
+            let already_present: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM trees WHERE hash = ?1)",
+                    params![tree.hash.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            if already_present {
+                continue;
+            }
+            insert_tree_row(&tx, tree)?;
+        }
+
+        // Store commit + files
+        let inserted = tx
+            .execute(
+            "INSERT OR IGNORE INTO commits (hash, branch_name, parent_hash, merge_parent_hash, manifest_hash, author, message, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                commit.hash.as_str(),
+                commit.branch_name,
+                commit.parent_hash.as_ref().map(|h| h.as_str()),
+                commit.merge_parent_hash.as_ref().map(|h| h.as_str()),
+                commit.manifest_hash.as_str(),
+                commit.author,
+                commit.message,
+                commit.timestamp.to_rfc3339(),
+            ],
+        )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        if inserted != 0 {
+            for file in &commit.files {
+                let change_type_str = match file.change_type {
+                    ChangeType::Added => "added",
+                    ChangeType::Modified => "modified",
+                    ChangeType::Deleted => "deleted",
+                    ChangeType::Renamed => "renamed",
+                };
+                tx.execute(
+                    "INSERT INTO commit_files (commit_hash, path, change_type, old_blob_hash, new_blob_hash, old_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        commit.hash.as_str(),
+                        file.path,
+                        change_type_str,
+                        file.old_blob_hash.as_ref().map(|h| h.as_str()),
+                        file.new_blob_hash.as_ref().map(|h| h.as_str()),
+                        file.old_path,
+                    ],
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            }
+        }
+
+        // Update branch head
+        tx.execute(
+            "INSERT OR REPLACE INTO branch_heads (branch_name, head_hash) VALUES (?1, ?2)",
+            params![branch_name, commit.hash.as_str()],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+
+        // Update legacy head
+        tx.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
+            params!["head", commit.hash.as_str()],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+
+        tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn put_commit_and_advance_refs(
+        &self,
+        branch_name: String,
+        parent_hash: Option<Hash>,
+        merge_parent_hash: Option<Hash>,
+        entries: Vec<ManifestEntry>,
+        author: String,
+        message: Option<String>,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        files: Vec<FileChange>,
+    ) -> Result<Hash> {
+        // Build tree structure and hash the commit before opening the
+        // transaction so the SQLite write lock is held only for publication.
+        let built = crate::build_tree(&entries)?;
+        let manifest_hash = built.root_hash.clone();
+        let commit = Commit::with_timestamp(
+            branch_name,
+            parent_hash,
+            merge_parent_hash,
+            manifest_hash,
+            author,
+            message,
+            files,
+            timestamp,
+        )?;
+        let commit_hash = commit.hash.clone();
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction()
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        for tree in &built.trees {
+            let already_present: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM trees WHERE hash = ?1)",
+                    params![tree.hash.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            if already_present {
+                continue;
+            }
+            insert_tree_row(&tx, tree)?;
+        }
+
+        let inserted = tx
+            .execute(
+            "INSERT OR IGNORE INTO commits (hash, branch_name, parent_hash, merge_parent_hash, manifest_hash, author, message, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                commit.hash.as_str(),
+                commit.branch_name.as_str(),
+                commit.parent_hash.as_ref().map(|h| h.as_str()),
+                commit.merge_parent_hash.as_ref().map(|h| h.as_str()),
+                commit.manifest_hash.as_str(),
+                commit.author.as_str(),
+                commit.message.as_deref(),
+                commit.timestamp.to_rfc3339(),
+            ],
+        )
+            .map_err(|e| OakError::Database(e.to_string()))?;
+
+        if inserted != 0 {
+            for file in &commit.files {
+                let change_type_str = match file.change_type {
+                    ChangeType::Added => "added",
+                    ChangeType::Modified => "modified",
+                    ChangeType::Deleted => "deleted",
+                    ChangeType::Renamed => "renamed",
+                };
+                tx.execute(
+                    "INSERT INTO commit_files (commit_hash, path, change_type, old_blob_hash, new_blob_hash, old_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        commit.hash.as_str(),
+                        file.path.as_str(),
+                        change_type_str,
+                        file.old_blob_hash.as_ref().map(|h| h.as_str()),
+                        file.new_blob_hash.as_ref().map(|h| h.as_str()),
+                        file.old_path.as_deref(),
+                    ],
+                )
+                .map_err(|e| OakError::Database(e.to_string()))?;
+            }
+        }
+
+        tx.execute(
+            "INSERT OR REPLACE INTO branch_heads (branch_name, head_hash) VALUES (?1, ?2)",
+            params![commit.branch_name.as_str(), commit.hash.as_str()],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+
+        tx.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
+            params![MetadataKey::Head.as_str(), commit.hash.as_str()],
+        )
+        .map_err(|e| OakError::Database(e.to_string()))?;
+
+        tx.commit().map_err(|e| OakError::Database(e.to_string()))?;
+        Ok(commit_hash)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn delete_migration_row(db_path: &Path, version: &str) {
+        let conn = Connection::open(db_path).unwrap();
+        conn.execute(
+            "DELETE FROM schema_migrations WHERE version = ?1",
+            params![version],
+        )
+        .unwrap();
+    }
+
+    fn migration_succeeded(db_path: &Path, version: &str) -> bool {
+        let conn = Connection::open(db_path).unwrap();
+        conn.query_row(
+            "SELECT succeeded FROM schema_migrations WHERE version = ?1",
+            params![version],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .unwrap()
+            == Some(1)
+    }
+
+    #[test]
+    fn missing_0007_row_with_existing_blob_codec_is_marked_applied() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let db_path = temp.path().join("oak.db");
+        drop(SqliteRepository::open(&db_path).unwrap());
+        delete_migration_row(&db_path, "0007_blobs_codec");
+
+        SqliteRepository::open(&db_path).unwrap();
+
+        assert!(migration_succeeded(&db_path, "0007_blobs_codec"));
+    }
+
+    #[test]
+    fn missing_0008_row_with_existing_tree_content_is_marked_applied() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let db_path = temp.path().join("oak.db");
+        drop(SqliteRepository::open(&db_path).unwrap());
+        delete_migration_row(&db_path, "0008_trees_content");
+
+        SqliteRepository::open(&db_path).unwrap();
+
+        assert!(migration_succeeded(&db_path, "0008_trees_content"));
+    }
+
+    #[test]
+    fn test_blob_roundtrip() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let blob = Blob::from_str("hello world");
+
+        repo.store_blob(&blob).unwrap();
+        let retrieved = repo.get_blob(&blob.hash).unwrap().unwrap();
+
+        assert_eq!(retrieved.hash, blob.hash);
+        assert_eq!(retrieved.content, blob.content);
+    }
+
+    #[test]
+    fn test_tree_put_walk_roundtrip() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        // Store the blobs first (FK enforcement at sqlite level requires they exist).
+        for content in ["a", "b", "c"] {
+            repo.store_blob(&Blob::from_str(content)).unwrap();
+        }
+
+        let entries = vec![
+            ManifestEntry {
+                path: "src/lib.rs".to_string(),
+                blob_hash: Blob::from_str("a").hash,
+                mode: FileMode::Regular,
+            },
+            ManifestEntry {
+                path: "src/bin/main.rs".to_string(),
+                blob_hash: Blob::from_str("b").hash,
+                mode: FileMode::Regular,
+            },
+            ManifestEntry {
+                path: "README.md".to_string(),
+                blob_hash: Blob::from_str("c").hash,
+                mode: FileMode::Regular,
+            },
+        ];
+
+        let root = repo.put_tree(entries.clone()).unwrap();
+        assert!(repo.has_tree(&root).unwrap());
+
+        let walked = repo.walk_tree(&root).unwrap();
+        assert_eq!(walked.len(), 3);
+
+        let manifest = Manifest::new(entries);
+        let walked_manifest = Manifest::new(walked);
+        assert_eq!(manifest.hash, walked_manifest.hash);
+    }
+
+    #[test]
+    fn store_tree_rejects_mismatched_storage_hash() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let tree = Tree::new(vec![TreeEntry {
+            name: "a.txt".to_string(),
+            kind: TreeEntryKind::Blob,
+            hash: Hash::from_hex(&"a".repeat(64)).unwrap(),
+            mode: FileMode::Regular,
+        }])
+        .unwrap();
+        let mut tampered = tree.clone();
+        tampered.hash = Hash::from_hex(&"b".repeat(64)).unwrap();
+
+        let err = repo.store_tree(&tampered).unwrap_err();
+        assert!(
+            matches!(err, OakError::InvalidHash(_)),
+            "expected invalid hash error, got {err:?}"
+        );
+        assert!(!repo.has_tree(&tampered.hash).unwrap());
+        assert!(repo.get_tree(&tampered.hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn get_tree_rejects_compressed_row_under_mismatched_hash() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let tree = Tree::new(vec![TreeEntry {
+            name: "a.txt".to_string(),
+            kind: TreeEntryKind::Blob,
+            hash: Hash::from_hex(&"a".repeat(64)).unwrap(),
+            mode: FileMode::Regular,
+        }])
+        .unwrap();
+        let claimed = Hash::from_hex(&"c".repeat(64)).unwrap();
+        let content = zstd_compress(&tree.canonical_bytes()).unwrap();
+        {
+            let conn = repo.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO trees (hash, content) VALUES (?1, ?2)",
+                rusqlite::params![claimed.as_str(), content],
+            )
+            .unwrap();
+        }
+
+        let err = repo.get_tree(&claimed).unwrap_err();
+        assert!(
+            matches!(err, OakError::InvalidHash(_)),
+            "expected invalid hash error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn legacy_tree_entries_fallback() {
+        // A tree written in the pre-0008 format (trees.content NULL + per-entry
+        // tree_entries rows) must still read back correctly via get_tree's
+        // fallback, identically to the new compressed-content format.
+        let repo = SqliteRepository::in_memory().unwrap();
+        let entries = vec![
+            TreeEntry {
+                name: "a.txt".to_string(),
+                kind: TreeEntryKind::Blob,
+                hash: Hash::from_hex(&"a".repeat(64)).unwrap(),
+                mode: FileMode::Executable,
+            },
+            TreeEntry {
+                name: "sub".to_string(),
+                kind: TreeEntryKind::Tree,
+                hash: Hash::from_hex(&"b".repeat(64)).unwrap(),
+                mode: FileMode::Regular,
+            },
+        ];
+        let tree = Tree::new(entries).unwrap();
+        {
+            let conn = repo.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO trees (hash) VALUES (?1)",
+                rusqlite::params![tree.hash.as_str()],
+            )
+            .unwrap();
+            for e in &tree.entries {
+                let mode_str = match (e.kind, e.mode) {
+                    (TreeEntryKind::Tree, _) => "tree",
+                    (TreeEntryKind::Blob, FileMode::Regular) => "regular",
+                    (TreeEntryKind::Blob, FileMode::Executable) => "executable",
+                    (TreeEntryKind::Blob, FileMode::Symlink) => "symlink",
+                };
+                conn.execute(
+                    "INSERT INTO tree_entries (tree_hash, name, kind, hash, mode) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![tree.hash.as_str(), e.name, e.kind.as_str(), e.hash.as_str(), mode_str],
+                )
+                .unwrap();
+            }
+        }
+        let got = repo.get_tree(&tree.hash).unwrap().unwrap();
+        assert_eq!(got.hash, tree.hash);
+        assert_eq!(got.canonical_bytes(), tree.canonical_bytes());
+    }
+
+    #[test]
+    fn compact_storage_backfills_drops_and_recompresses() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        // A new-format tree via the normal write path (gets trees.content).
+        repo.store_blob(&Blob::from_str("x")).unwrap();
+        let new_root = repo
+            .put_tree(vec![ManifestEntry {
+                path: "dir/x.txt".to_string(),
+                blob_hash: Blob::from_str("x").hash,
+                mode: FileMode::Regular,
+            }])
+            .unwrap();
+
+        // A legacy tree: content NULL + tree_entries rows.
+        let legacy = Tree::new(vec![TreeEntry {
+            name: "old.txt".to_string(),
+            kind: TreeEntryKind::Blob,
+            hash: Hash::from_hex(&"c".repeat(64)).unwrap(),
+            mode: FileMode::Regular,
+        }])
+        .unwrap();
+        // A legacy raw blob: codec 0, compressible.
+        let legacy_blob = Blob::from_str(&"zzzz ".repeat(80));
+        {
+            let conn = repo.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO trees (hash) VALUES (?1)",
+                rusqlite::params![legacy.hash.as_str()],
+            )
+            .unwrap();
+            for e in &legacy.entries {
+                conn.execute(
+                    "INSERT INTO tree_entries (tree_hash, name, kind, hash, mode) VALUES (?1, ?2, ?3, ?4, 'regular')",
+                    rusqlite::params![legacy.hash.as_str(), e.name, e.kind.as_str(), e.hash.as_str()],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO blobs (hash, content, size, codec) VALUES (?1, ?2, ?3, 0)",
+                rusqlite::params![
+                    legacy_blob.hash.as_str(),
+                    legacy_blob.content,
+                    legacy_blob.size as i64
+                ],
+            )
+            .unwrap();
+        }
+
+        let stats = repo.compact_storage().unwrap();
+        assert_eq!(stats.trees_backfilled, 1);
+        assert!(stats.tree_entries_dropped);
+        assert!(stats.blobs_recompressed >= 1);
+
+        // tree_entries table is gone.
+        {
+            let conn = repo.conn.lock().unwrap();
+            assert!(!table_exists(&conn, "tree_entries").unwrap());
+        }
+
+        // Both trees and both blobs still read correctly.
+        assert!(repo.get_tree(&new_root).unwrap().is_some());
+        let got_legacy = repo.get_tree(&legacy.hash).unwrap().unwrap();
+        assert_eq!(got_legacy.canonical_bytes(), legacy.canonical_bytes());
+        assert_eq!(
+            repo.get_blob(&legacy_blob.hash).unwrap().unwrap().content,
+            legacy_blob.content
+        );
+
+        // Idempotent: a second run is a no-op (plus a VACUUM).
+        let stats2 = repo.compact_storage().unwrap();
+        assert_eq!(stats2.trees_backfilled, 0);
+        assert_eq!(stats2.blobs_recompressed, 0);
+    }
+
+    #[test]
+    fn legacy_raw_blob_fallback() {
+        // A pre-0007 blob row (raw content, codec 0) must read back as plaintext
+        // even though new writes would have zstd-compressed it.
+        let repo = SqliteRepository::in_memory().unwrap();
+        let blob = Blob::from_str(&"hello world ".repeat(50)); // very compressible
+        {
+            let conn = repo.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO blobs (hash, content, size, codec) VALUES (?1, ?2, ?3, 0)",
+                rusqlite::params![blob.hash.as_str(), blob.content, blob.size as i64],
+            )
+            .unwrap();
+        }
+        let got = repo.get_blob(&blob.hash).unwrap().unwrap();
+        assert_eq!(got.content, blob.content);
+    }
+
+    #[test]
+    fn new_blob_compresses_and_roundtrips() {
+        // A compressible blob stored through the normal path is zstd-encoded
+        // (codec 1) yet returns identical plaintext.
+        let repo = SqliteRepository::in_memory().unwrap();
+        let blob = Blob::from_str(&"abcabcabc ".repeat(100));
+        repo.store_blob(&blob).unwrap();
+        let codec: i64 = {
+            let conn = repo.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT codec FROM blobs WHERE hash = ?1",
+                rusqlite::params![blob.hash.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(codec, 1, "compressible blob should store as zstd");
+        let got = repo.get_blob(&blob.hash).unwrap().unwrap();
+        assert_eq!(got.content, blob.content);
+    }
+
+    #[test]
+    fn test_tree_subtree_dedup() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        for content in ["x", "y"] {
+            repo.store_blob(&Blob::from_str(content)).unwrap();
+        }
+
+        // Two roots that share the "shared/" subtree exactly.
+        let entries_a = vec![
+            ManifestEntry {
+                path: "shared/x.txt".to_string(),
+                blob_hash: Blob::from_str("x").hash,
+                mode: FileMode::Regular,
+            },
+            ManifestEntry {
+                path: "shared/y.txt".to_string(),
+                blob_hash: Blob::from_str("y").hash,
+                mode: FileMode::Regular,
+            },
+        ];
+        let entries_b = vec![
+            ManifestEntry {
+                path: "shared/x.txt".to_string(),
+                blob_hash: Blob::from_str("x").hash,
+                mode: FileMode::Regular,
+            },
+            ManifestEntry {
+                path: "shared/y.txt".to_string(),
+                blob_hash: Blob::from_str("y").hash,
+                mode: FileMode::Regular,
+            },
+            ManifestEntry {
+                path: "extra.txt".to_string(),
+                blob_hash: Blob::from_str("x").hash,
+                mode: FileMode::Regular,
+            },
+        ];
+
+        let root_a = repo.put_tree(entries_a).unwrap();
+        let root_b = repo.put_tree(entries_b).unwrap();
+        assert_ne!(root_a, root_b);
+
+        // The "shared" subtree should be the same object for both roots.
+        let shared_a = repo.subtree_at_path(&root_a, "shared").unwrap().unwrap();
+        let shared_b = repo.subtree_at_path(&root_b, "shared").unwrap().unwrap();
+        assert_eq!(shared_a, shared_b);
+    }
+
+    #[test]
+    fn test_tree_resolve_path() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        repo.store_blob(&Blob::from_str("file")).unwrap();
+        let entries = vec![ManifestEntry {
+            path: "a/b/c.txt".to_string(),
+            blob_hash: Blob::from_str("file").hash,
+            mode: FileMode::Regular,
+        }];
+        let root = repo.put_tree(entries).unwrap();
+
+        let blob = repo.resolve_path_in_tree(&root, "a/b/c.txt").unwrap();
+        assert!(blob.is_some());
+        assert_eq!(blob.unwrap().kind, TreeEntryKind::Blob);
+
+        let dir = repo.resolve_path_in_tree(&root, "a/b").unwrap();
+        assert_eq!(dir.unwrap().kind, TreeEntryKind::Tree);
+
+        let missing = repo.resolve_path_in_tree(&root, "a/zzz.txt").unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_tree_put_idempotent() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        repo.store_blob(&Blob::from_str("c")).unwrap();
+        let entries = vec![ManifestEntry {
+            path: "x.txt".to_string(),
+            blob_hash: Blob::from_str("c").hash,
+            mode: FileMode::Regular,
+        }];
+        let r1 = repo.put_tree(entries.clone()).unwrap();
+        let r2 = repo.put_tree(entries).unwrap();
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn test_put_commit_and_advance_refs_stores_commit_and_moves_heads() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let blob = Blob::from_str("content");
+        repo.store_blob(&blob).unwrap();
+        let entries = vec![ManifestEntry {
+            path: "file.txt".to_string(),
+            blob_hash: blob.hash.clone(),
+            mode: FileMode::Regular,
+        }];
+        let files = vec![FileChange {
+            path: "file.txt".to_string(),
+            change_type: ChangeType::Added,
+            old_blob_hash: None,
+            new_blob_hash: Some(blob.hash),
+            old_path: None,
+            old_mode: None,
+            new_mode: None,
+        }];
+        let timestamp = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+
+        let commit_hash = repo
+            .put_commit_and_advance_refs(
+                "main".to_string(),
+                None,
+                None,
+                entries,
+                "tester <t@example.com>".to_string(),
+                None,
+                timestamp,
+                files,
+            )
+            .unwrap();
+
+        assert_eq!(
+            repo.get_branch_head("main").unwrap(),
+            Some(commit_hash.clone())
+        );
+        assert_eq!(repo.get_head().unwrap(), Some(commit_hash.clone()));
+        let commit = repo.get_commit(&commit_hash).unwrap().unwrap();
+        assert_eq!(commit.timestamp, timestamp);
+        assert_eq!(commit.files.len(), 1);
+        let manifest = repo.get_manifest(&commit.manifest_hash).unwrap().unwrap();
+        assert_eq!(manifest.entries.len(), 1);
+        assert_eq!(manifest.entries[0].path, "file.txt");
+    }
+
+    #[test]
+    fn test_manifest_roundtrip() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        let blob = Blob::from_str("content");
+        repo.store_blob(&blob).unwrap();
+
+        let manifest = Manifest::new(vec![ManifestEntry {
+            path: "test.txt".to_string(),
+            blob_hash: blob.hash.clone(),
+            mode: FileMode::Regular,
+        }]);
+
+        repo.store_manifest(&manifest).unwrap();
+        let retrieved = repo.get_manifest(&manifest.hash).unwrap().unwrap();
+
+        assert_eq!(retrieved.hash, manifest.hash);
+        assert_eq!(retrieved.entries.len(), 1);
+        assert_eq!(retrieved.entries[0].path, "test.txt");
+    }
+
+    #[test]
+    fn test_branch_roundtrip() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        let br = Branch::new("feature-x".to_string(), Some("A feature".to_string()), None);
+        repo.store_branch(&br).unwrap();
+
+        let retrieved = repo.get_branch("feature-x").unwrap().unwrap();
+        assert_eq!(retrieved.name, "feature-x");
+        assert_eq!(retrieved.description, Some("A feature".to_string()));
+        assert_eq!(retrieved.status, BranchStatus::Open);
+    }
+
+    #[test]
+    fn test_commit_roundtrip() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        let blob = Blob::from_str("content");
+        repo.store_blob(&blob).unwrap();
+
+        let manifest = Manifest::new(vec![ManifestEntry {
+            path: "test.txt".to_string(),
+            blob_hash: blob.hash.clone(),
+            mode: FileMode::Regular,
+        }]);
+        repo.store_manifest(&manifest).unwrap();
+
+        let br = Branch::new("main".to_string(), None, None);
+        repo.store_branch(&br).unwrap();
+
+        let commit = Commit::new(
+            "main".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "Test Author".to_string(),
+            Some("Initial commit".to_string()),
+            vec![FileChange {
+                path: "test.txt".to_string(),
+                change_type: ChangeType::Added,
+                old_blob_hash: None,
+                new_blob_hash: Some(blob.hash.clone()),
+                old_path: None,
+                old_mode: None,
+                new_mode: None,
+            }],
+        )
+        .unwrap();
+
+        repo.store_commit(&commit).unwrap();
+        let retrieved = repo.get_commit(&commit.hash).unwrap().unwrap();
+
+        assert_eq!(retrieved.hash, commit.hash);
+        assert_eq!(retrieved.branch_name, "main");
+        assert_eq!(retrieved.message, Some("Initial commit".to_string()));
+        assert_eq!(retrieved.files.len(), 1);
+    }
+
+    #[test]
+    fn store_commit_is_idempotent_for_file_changes() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        let blob = Blob::from_str("content");
+        repo.store_blob(&blob).unwrap();
+        let manifest = Manifest::new(vec![ManifestEntry {
+            path: "test.txt".to_string(),
+            blob_hash: blob.hash.clone(),
+            mode: FileMode::Regular,
+        }]);
+        repo.store_manifest(&manifest).unwrap();
+
+        let commit = Commit::new(
+            "main".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "Test Author".to_string(),
+            Some("Initial commit".to_string()),
+            vec![FileChange {
+                path: "test.txt".to_string(),
+                change_type: ChangeType::Added,
+                old_blob_hash: None,
+                new_blob_hash: Some(blob.hash.clone()),
+                old_path: None,
+                old_mode: None,
+                new_mode: None,
+            }],
+        )
+        .unwrap();
+
+        repo.store_commit(&commit).unwrap();
+        repo.store_commit(&commit).unwrap();
+
+        let conn = repo.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM commit_files WHERE commit_hash = ?1",
+                rusqlite::params![commit.hash.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_branch_head() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        let br = Branch::new("main".to_string(), None, None);
+        repo.store_branch(&br).unwrap();
+
+        assert!(repo.get_branch_head("main").unwrap().is_none());
+
+        let blob = Blob::new(b"test".to_vec());
+        repo.store_blob(&blob).unwrap();
+        let manifest = Manifest::new(vec![ManifestEntry {
+            path: "test.txt".to_string(),
+            blob_hash: blob.hash.clone(),
+            mode: FileMode::Regular,
+        }]);
+        repo.store_manifest(&manifest).unwrap();
+
+        let commit = Commit::new(
+            "main".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "test".to_string(),
+            Some("test commit".to_string()),
+            vec![],
+        )
+        .unwrap();
+        repo.store_commit(&commit).unwrap();
+
+        repo.set_branch_head("main", &commit.hash).unwrap();
+
+        let retrieved = repo.get_branch_head("main").unwrap().unwrap();
+        assert_eq!(retrieved, commit.hash);
+    }
+
+    #[test]
+    fn test_list_branches() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        let br1 = Branch::new("main".to_string(), None, None);
+        let br2 = Branch::new(
+            "feature".to_string(),
+            Some("feature branch".to_string()),
+            Some("main".to_string()),
+        );
+        repo.store_branch(&br1).unwrap();
+        repo.store_branch(&br2).unwrap();
+
+        let all = repo.list_branches().unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_commits_for_branch() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        let br = Branch::new("main".to_string(), None, None);
+        repo.store_branch(&br).unwrap();
+
+        let manifest = Manifest::empty();
+        repo.store_manifest(&manifest).unwrap();
+
+        let commit1 = Commit::new(
+            "main".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "author".to_string(),
+            Some("commit 1".to_string()),
+            vec![],
+        )
+        .unwrap();
+        repo.store_commit(&commit1).unwrap();
+
+        let commit2 = Commit::new(
+            "main".to_string(),
+            Some(commit1.hash.clone()),
+            None,
+            manifest.hash.clone(),
+            "author".to_string(),
+            Some("commit 2".to_string()),
+            vec![],
+        )
+        .unwrap();
+        repo.store_commit(&commit2).unwrap();
+
+        let commits = repo.get_commits_for_branch("main").unwrap();
+        assert_eq!(commits.len(), 2);
+    }
+
+    #[test]
+    fn test_count_commits_for_branch() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        let manifest = Manifest::empty();
+        repo.store_manifest(&manifest).unwrap();
+
+        // A branch with no commits of its own (freshly seeded onto a parent)
+        // counts zero — the unmerged-work baseline.
+        assert_eq!(repo.count_commits_for_branch("feature").unwrap(), 0);
+
+        // One commit on `main`, two authored on `feature`. The count is keyed
+        // strictly off the `branch_name` column, so `feature` reports 2
+        // regardless of `main`'s history — exactly the "commits not yet merged
+        // into the parent" signal.
+        let base = Commit::new(
+            "main".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "author".to_string(),
+            None,
+            vec![],
+        )
+        .unwrap();
+        repo.store_commit(&base).unwrap();
+
+        let feat1 = Commit::new(
+            "feature".to_string(),
+            Some(base.hash.clone()),
+            None,
+            manifest.hash.clone(),
+            "author".to_string(),
+            None,
+            vec![],
+        )
+        .unwrap();
+        repo.store_commit(&feat1).unwrap();
+
+        let feat2 = Commit::new(
+            "feature".to_string(),
+            Some(feat1.hash.clone()),
+            None,
+            manifest.hash.clone(),
+            "author".to_string(),
+            None,
+            vec![],
+        )
+        .unwrap();
+        repo.store_commit(&feat2).unwrap();
+
+        assert_eq!(repo.count_commits_for_branch("feature").unwrap(), 2);
+        assert_eq!(repo.count_commits_for_branch("main").unwrap(), 1);
+        // Matches the materializing path it optimizes.
+        assert_eq!(
+            repo.count_commits_for_branch("feature").unwrap(),
+            repo.get_commits_for_branch("feature").unwrap().len()
+        );
+    }
+
+    #[test]
+    fn test_merge_child_exists() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        let manifest = Manifest::empty();
+        repo.store_manifest(&manifest).unwrap();
+
+        let feature = Commit::new(
+            "feature".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "author".to_string(),
+            None,
+            vec![],
+        )
+        .unwrap();
+        repo.store_commit(&feature).unwrap();
+
+        assert!(!repo.merge_child_exists(&feature.hash).unwrap());
+
+        let main_merge = Commit::new(
+            "main".to_string(),
+            None,
+            Some(feature.hash.clone()),
+            manifest.hash.clone(),
+            "author".to_string(),
+            Some("merged feature".to_string()),
+            vec![],
+        )
+        .unwrap();
+        repo.store_commit(&main_merge).unwrap();
+
+        assert!(repo.merge_child_exists(&feature.hash).unwrap());
+    }
+
+    #[test]
+    fn test_metadata() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        assert!(repo.get_head().unwrap().is_none());
+
+        let hash = Hash("a".repeat(64));
+        repo.set_head(&hash).unwrap();
+
+        let retrieved = repo.get_head().unwrap().unwrap();
+        assert_eq!(retrieved, hash);
+    }
+
+    #[test]
+    fn test_current_branch() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        assert!(repo.get_current_branch_name().unwrap().is_none());
+
+        repo.set_current_branch("main").unwrap();
+        let name = repo.get_current_branch_name().unwrap().unwrap();
+        assert_eq!(name, "main");
+    }
+
+    #[test]
+    fn test_tag_roundtrip() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        let br = Branch::new("main".to_string(), None, None);
+        repo.store_branch(&br).unwrap();
+
+        let manifest = Manifest::empty();
+        repo.store_manifest(&manifest).unwrap();
+
+        let commit = Commit::new(
+            "main".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "author".to_string(),
+            Some("commit".to_string()),
+            vec![],
+        )
+        .unwrap();
+        repo.store_commit(&commit).unwrap();
+
+        repo.create_tag("v1.0", &commit.hash).unwrap();
+
+        let tags = repo.list_tags().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].name, "v1.0");
+        assert_eq!(tags[0].commit_hash, commit.hash);
+
+        repo.delete_tag("v1.0").unwrap();
+        let tags = repo.list_tags().unwrap();
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn test_branch_description_update() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        let br = Branch::new("main".to_string(), Some("old desc".to_string()), None);
+        repo.store_branch(&br).unwrap();
+
+        repo.update_branch_description("main", "new desc").unwrap();
+
+        let updated = repo.get_branch("main").unwrap().unwrap();
+        assert_eq!(updated.description, Some("new desc".to_string()));
+    }
+
+    #[test]
+    fn test_get_commits_since_edge_cases() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        let br = Branch::new("main".to_string(), None, None);
+        repo.store_branch(&br).unwrap();
+
+        let manifest = Manifest::empty();
+        repo.store_manifest(&manifest).unwrap();
+
+        // No commits - get_commits_since should return empty
+        let commits = repo.get_commits_since("main", None).unwrap();
+        assert!(commits.is_empty());
+
+        // With a non-existent since hash and no commits — returns empty (no commits on branch)
+        let commits = repo
+            .get_commits_since("main", Some(&Hash("nonexistent".to_string())))
+            .unwrap();
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn test_get_commits_since_cross_branch_hash_returns_all() {
+        // When since_hash belongs to a different branch (not found in this
+        // branch's commits), get_commits_since should return ALL commits
+        // for this branch, since they are all new from the caller's view.
+        let repo = SqliteRepository::in_memory().unwrap();
+        let manifest = Manifest::empty();
+        repo.store_manifest(&manifest).unwrap();
+        repo.store_branch(&Branch::new("default".to_string(), None, None))
+            .unwrap();
+        repo.store_branch(&Branch::new(
+            "update".to_string(),
+            None,
+            Some("default".to_string()),
+        ))
+        .unwrap();
+
+        // Commit on "default"
+        let c_default = Commit::new(
+            "default".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "a".to_string(),
+            Some("default commit".to_string()),
+            vec![],
+        )
+        .unwrap();
+        repo.store_commit(&c_default).unwrap();
+
+        // Commits on "update"
+        let c_update1 = Commit::new(
+            "update".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "a".to_string(),
+            Some("update commit 1".to_string()),
+            vec![],
+        )
+        .unwrap();
+        let c_update2 = Commit::new(
+            "update".to_string(),
+            Some(c_update1.hash.clone()),
+            None,
+            manifest.hash.clone(),
+            "a".to_string(),
+            Some("update commit 2".to_string()),
+            vec![],
+        )
+        .unwrap();
+        repo.store_commit(&c_update1).unwrap();
+        repo.store_commit(&c_update2).unwrap();
+
+        // get_commits_since("update", default_branch_head) should return
+        // ALL "update" commits since the hash doesn't belong to "update"
+        let since = repo
+            .get_commits_since("update", Some(&c_default.hash))
+            .unwrap();
+        assert_eq!(
+            since.len(),
+            2,
+            "should return all update commits when since_hash is from another branch"
+        );
+        assert_eq!(since[0].message, Some("update commit 1".to_string()));
+        assert_eq!(since[1].message, Some("update commit 2".to_string()));
+    }
+
+    // ============================================================
+    // Blob edge cases
+    // ============================================================
+
+    #[test]
+    fn test_has_blob() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let blob = Blob::from_str("test content");
+
+        assert!(!repo.has_blob(&blob.hash).unwrap());
+        repo.store_blob(&blob).unwrap();
+        assert!(repo.has_blob(&blob.hash).unwrap());
+    }
+
+    #[test]
+    fn test_get_nonexistent_blob() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let result = repo.get_blob(&Hash("nonexistent".to_string())).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_store_blob_idempotent() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let blob = Blob::from_str("same content");
+
+        repo.store_blob(&blob).unwrap();
+        repo.store_blob(&blob).unwrap(); // Should not error (INSERT OR IGNORE)
+
+        let retrieved = repo.get_blob(&blob.hash).unwrap().unwrap();
+        assert_eq!(retrieved.content, blob.content);
+    }
+
+    #[test]
+    fn test_blob_empty_content() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let blob = Blob::new(Vec::new());
+
+        repo.store_blob(&blob).unwrap();
+        let retrieved = repo.get_blob(&blob.hash).unwrap().unwrap();
+        assert!(retrieved.content.is_empty());
+        assert_eq!(retrieved.size, 0);
+    }
+
+    #[test]
+    fn test_put_blobs_matches_put_blob() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let contents: Vec<Vec<u8>> = vec![
+            b"alpha".to_vec(),
+            Vec::new(),
+            b"alpha".to_vec(), // duplicate within one batch
+            vec![0u8; 64 * 1024],
+        ];
+
+        let hashes = repo.put_blobs(contents.clone()).unwrap();
+        assert_eq!(hashes.len(), contents.len());
+        for (content, hash) in contents.iter().zip(&hashes) {
+            // Same canonical hash as the one-at-a-time path...
+            assert_eq!(hash, &repo.put_blob(content.clone()).unwrap());
+            // ...and the content round-trips.
+            let retrieved = repo.get_blob(hash).unwrap().unwrap();
+            assert_eq!(&retrieved.content, content);
+        }
+        assert_eq!(hashes[0], hashes[2]);
+
+        assert!(repo.put_blobs(Vec::new()).unwrap().is_empty());
+
+        // The deferred-source entry point yields the same canonical hashes,
+        // in input order, with or without size hints.
+        let sources: Vec<BlobSource> = contents
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, c)| {
+                let hint = if i % 2 == 0 {
+                    Some(c.len() as u64)
+                } else {
+                    None
+                };
+                BlobSource::new(hint, move || Ok(c))
+            })
+            .collect();
+        assert_eq!(repo.put_blob_sources(sources).unwrap(), hashes);
+        assert!(repo.put_blob_sources(Vec::new()).unwrap().is_empty());
+        // Single-source fast path (autocommit, no transaction) agrees too.
+        let single = vec![BlobSource::new(None, || Ok(b"alpha".to_vec()))];
+        assert_eq!(
+            repo.put_blob_sources(single).unwrap(),
+            vec![hashes[0].clone()]
+        );
+    }
+
+    #[test]
+    fn test_blob_binary_content() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let binary_data: Vec<u8> = (0..=255).collect();
+        let blob = Blob::new(binary_data.clone());
+
+        repo.store_blob(&blob).unwrap();
+        let retrieved = repo.get_blob(&blob.hash).unwrap().unwrap();
+        assert_eq!(retrieved.content, binary_data);
+    }
+
+    // ============================================================
+    // Manifest edge cases
+    // ============================================================
+
+    #[test]
+    fn test_get_nonexistent_manifest() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let result = repo.get_manifest(&Hash("nonexistent".to_string())).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_manifest_with_multiple_entries() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        let blob1 = Blob::from_str("content1");
+        let blob2 = Blob::from_str("content2");
+        repo.store_blob(&blob1).unwrap();
+        repo.store_blob(&blob2).unwrap();
+
+        let manifest = Manifest::new(vec![
+            ManifestEntry {
+                path: "src/main.rs".to_string(),
+                blob_hash: blob1.hash.clone(),
+                mode: FileMode::Regular,
+            },
+            ManifestEntry {
+                path: "scripts/build.sh".to_string(),
+                blob_hash: blob2.hash.clone(),
+                mode: FileMode::Executable,
+            },
+        ]);
+
+        repo.store_manifest(&manifest).unwrap();
+        let retrieved = repo.get_manifest(&manifest.hash).unwrap().unwrap();
+
+        assert_eq!(retrieved.entries.len(), 2);
+        let paths: Vec<&str> = retrieved.entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"src/main.rs"));
+        assert!(paths.contains(&"scripts/build.sh"));
+
+        // Check modes are preserved
+        let exec_entry = retrieved
+            .entries
+            .iter()
+            .find(|e| e.path == "scripts/build.sh")
+            .unwrap();
+        assert_eq!(exec_entry.mode, FileMode::Executable);
+    }
+
+    #[test]
+    fn test_store_manifest_idempotent() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let manifest = Manifest::empty();
+
+        repo.store_manifest(&manifest).unwrap();
+        repo.store_manifest(&manifest).unwrap(); // Should not error
+    }
+
+    // ============================================================
+    // Branch edge cases
+    // ============================================================
+
+    #[test]
+    fn test_get_nonexistent_branch() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let result = repo.get_branch("nonexistent").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_branch_status_update() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let br = Branch::new("feature".to_string(), None, None);
+        repo.store_branch(&br).unwrap();
+
+        assert_eq!(
+            repo.get_branch("feature").unwrap().unwrap().status,
+            BranchStatus::Open
+        );
+
+        repo.update_branch_status("feature", BranchStatus::Closed)
+            .unwrap();
+        assert_eq!(
+            repo.get_branch("feature").unwrap().unwrap().status,
+            BranchStatus::Closed
+        );
+
+        repo.update_branch_status("feature", BranchStatus::Open)
+            .unwrap();
+        assert_eq!(
+            repo.get_branch("feature").unwrap().unwrap().status,
+            BranchStatus::Open
+        );
+    }
+
+    #[test]
+    fn test_branch_with_parent() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        let main = Branch::new("main".to_string(), None, None);
+        let feature = Branch::new(
+            "feature".to_string(),
+            Some("my feature".to_string()),
+            Some("main".to_string()),
+        );
+        repo.store_branch(&main).unwrap();
+        repo.store_branch(&feature).unwrap();
+
+        let retrieved = repo.get_branch("feature").unwrap().unwrap();
+        assert_eq!(retrieved.parent_branch, Some("main".to_string()));
+        assert_eq!(retrieved.description, Some("my feature".to_string()));
+    }
+
+    #[test]
+    fn test_get_branch_head_nonexistent() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let result = repo.get_branch_head("nonexistent").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_rename_branch_rejects_orphan_target_head() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let manifest = Manifest::empty();
+        repo.store_manifest(&manifest).unwrap();
+
+        repo.store_branch(&Branch::new("old".to_string(), None, None))
+            .unwrap();
+
+        let old_commit = Commit::new(
+            "old".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "author".to_string(),
+            Some("old".to_string()),
+            vec![],
+        )
+        .unwrap();
+        let target_commit = Commit::new(
+            "target".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "author".to_string(),
+            Some("target".to_string()),
+            vec![],
+        )
+        .unwrap();
+        repo.store_commit(&old_commit).unwrap();
+        repo.store_commit(&target_commit).unwrap();
+        repo.set_branch_head("old", &old_commit.hash).unwrap();
+        repo.set_branch_head("target", &target_commit.hash).unwrap();
+
+        let err = repo.rename_branch("old", "target").unwrap_err();
+        assert!(
+            matches!(err, OakError::BranchAlreadyExists(ref name) if name == "target"),
+            "expected BranchAlreadyExists, got {err:?}"
+        );
+        assert_eq!(
+            repo.get_branch_head("old").unwrap(),
+            Some(old_commit.hash.clone())
+        );
+        assert_eq!(
+            repo.get_branch_head("target").unwrap(),
+            Some(target_commit.hash.clone())
+        );
+    }
+
+    // ============================================================
+    // Commit edge cases
+    // ============================================================
+
+    #[test]
+    fn test_has_commit() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let manifest = Manifest::empty();
+        repo.store_manifest(&manifest).unwrap();
+        let br = Branch::new("main".to_string(), None, None);
+        repo.store_branch(&br).unwrap();
+
+        let commit = Commit::new(
+            "main".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "author".to_string(),
+            Some("test".to_string()),
+            vec![],
+        )
+        .unwrap();
+
+        assert!(!repo.has_commit(&commit.hash).unwrap());
+        repo.store_commit(&commit).unwrap();
+        assert!(repo.has_commit(&commit.hash).unwrap());
+    }
+
+    #[test]
+    fn test_get_nonexistent_commit() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let result = repo.get_commit(&Hash("nonexistent".to_string())).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_commits_since_with_valid_hash() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let manifest = Manifest::empty();
+        repo.store_manifest(&manifest).unwrap();
+        let br = Branch::new("main".to_string(), None, None);
+        repo.store_branch(&br).unwrap();
+
+        let c1 = Commit::new(
+            "main".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "a".to_string(),
+            Some("c1".to_string()),
+            vec![],
+        )
+        .unwrap();
+        let c2 = Commit::new(
+            "main".to_string(),
+            Some(c1.hash.clone()),
+            None,
+            manifest.hash.clone(),
+            "a".to_string(),
+            Some("c2".to_string()),
+            vec![],
+        )
+        .unwrap();
+        let c3 = Commit::new(
+            "main".to_string(),
+            Some(c2.hash.clone()),
+            None,
+            manifest.hash.clone(),
+            "a".to_string(),
+            Some("c3".to_string()),
+            vec![],
+        )
+        .unwrap();
+        repo.store_commit(&c1).unwrap();
+        repo.store_commit(&c2).unwrap();
+        repo.store_commit(&c3).unwrap();
+
+        // Get commits since c1 should return c2 and c3
+        let since = repo.get_commits_since("main", Some(&c1.hash)).unwrap();
+        assert_eq!(since.len(), 2);
+        assert_eq!(since[0].message, Some("c2".to_string()));
+        assert_eq!(since[1].message, Some("c3".to_string()));
+
+        // Get commits since c2 should return only c3
+        let since = repo.get_commits_since("main", Some(&c2.hash)).unwrap();
+        assert_eq!(since.len(), 1);
+        assert_eq!(since[0].message, Some("c3".to_string()));
+
+        // Get commits since c3 should return empty
+        let since = repo.get_commits_since("main", Some(&c3.hash)).unwrap();
+        assert!(since.is_empty());
+    }
+
+    #[test]
+    fn test_get_all_commits() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let manifest = Manifest::empty();
+        repo.store_manifest(&manifest).unwrap();
+        repo.store_branch(&Branch::new("main".to_string(), None, None))
+            .unwrap();
+        repo.store_branch(&Branch::new(
+            "feature".to_string(),
+            None,
+            Some("main".to_string()),
+        ))
+        .unwrap();
+
+        let c1 = Commit::new(
+            "main".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "a".to_string(),
+            Some("main commit".to_string()),
+            vec![],
+        )
+        .unwrap();
+        let c2 = Commit::new(
+            "feature".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "a".to_string(),
+            Some("feature commit".to_string()),
+            vec![],
+        )
+        .unwrap();
+        repo.store_commit(&c1).unwrap();
+        repo.store_commit(&c2).unwrap();
+
+        let all = repo.get_all_commits().unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_commit_with_file_changes() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let manifest = Manifest::empty();
+        repo.store_manifest(&manifest).unwrap();
+        let br = Branch::new("main".to_string(), None, None);
+        repo.store_branch(&br).unwrap();
+
+        let blob_hash = Hash("abc123".repeat(11)[..64].to_string());
+        let commit = Commit::new(
+            "main".to_string(),
+            None,
+            None,
+            manifest.hash.clone(),
+            "author".to_string(),
+            Some("with changes".to_string()),
+            vec![
+                FileChange {
+                    path: "added.txt".to_string(),
+                    change_type: ChangeType::Added,
+                    old_blob_hash: None,
+                    new_blob_hash: Some(blob_hash.clone()),
+                    old_path: None,
+                    old_mode: None,
+                    new_mode: None,
+                },
+                FileChange {
+                    path: "modified.txt".to_string(),
+                    change_type: ChangeType::Modified,
+                    old_blob_hash: Some(blob_hash.clone()),
+                    new_blob_hash: Some(blob_hash.clone()),
+                    old_path: None,
+                    old_mode: None,
+                    new_mode: None,
+                },
+                FileChange {
+                    path: "deleted.txt".to_string(),
+                    change_type: ChangeType::Deleted,
+                    old_blob_hash: Some(blob_hash.clone()),
+                    new_blob_hash: None,
+                    old_path: None,
+                    old_mode: None,
+                    new_mode: None,
+                },
+            ],
+        )
+        .unwrap();
+
+        repo.store_commit(&commit).unwrap();
+        let retrieved = repo.get_commit(&commit.hash).unwrap().unwrap();
+
+        assert_eq!(retrieved.files.len(), 3);
+        assert!(retrieved
+            .files
+            .iter()
+            .any(|f| f.path == "added.txt" && f.change_type == ChangeType::Added));
+        assert!(retrieved
+            .files
+            .iter()
+            .any(|f| f.path == "modified.txt" && f.change_type == ChangeType::Modified));
+        assert!(retrieved
+            .files
+            .iter()
+            .any(|f| f.path == "deleted.txt" && f.change_type == ChangeType::Deleted));
+    }
+
+    // ============================================================
+    // Chunk operations
+    // ============================================================
+
+    #[test]
+    fn test_chunk_roundtrip() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let data = b"chunk content here";
+        let hash = hash_bytes(data);
+
+        assert!(!repo.has_chunk(&hash).unwrap());
+        repo.store_chunk(&hash, data).unwrap();
+        assert!(repo.has_chunk(&hash).unwrap());
+
+        let retrieved = repo.get_chunk(&hash).unwrap().unwrap();
+        assert_eq!(retrieved, data);
+    }
+
+    #[test]
+    fn test_store_chunk_rejects_hash_mismatch() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let claimed = hash_bytes(b"expected");
+
+        let err = repo.store_chunk(&claimed, b"different").unwrap_err();
+        assert!(
+            matches!(err, OakError::InvalidHash(_)),
+            "expected invalid hash error, got {err:?}"
+        );
+        assert!(!repo.has_chunk(&claimed).unwrap());
+    }
+
+    #[test]
+    fn test_get_nonexistent_chunk() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let result = repo.get_chunk(&Hash("nonexistent".to_string())).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_blob_chunks_mapping() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let blob_hash = Hash("blobhash".repeat(8)[..64].to_string());
+        let chunk1_data = b"chunk1data";
+        let chunk2_data = b"chunk2data";
+        let chunk1_hash = hash_bytes(chunk1_data);
+        let chunk2_hash = hash_bytes(chunk2_data);
+
+        // Store the actual chunks first (FK constraint)
+        repo.store_chunk(&chunk1_hash, chunk1_data).unwrap();
+        repo.store_chunk(&chunk2_hash, chunk2_data).unwrap();
+
+        let chunks = vec![
+            ChunkInfo {
+                hash: chunk1_hash,
+                offset: 0,
+                length: 1024,
+            },
+            ChunkInfo {
+                hash: chunk2_hash,
+                offset: 1024,
+                length: 512,
+            },
+        ];
+
+        // No mapping initially
+        assert!(repo.get_blob_chunks(&blob_hash).unwrap().is_none());
+
+        repo.store_blob_chunks(&blob_hash, &chunks).unwrap();
+
+        let retrieved = repo.get_blob_chunks(&blob_hash).unwrap().unwrap();
+        assert_eq!(retrieved.len(), 2);
+        assert_eq!(retrieved[0].offset, 0);
+        assert_eq!(retrieved[0].length, 1024);
+        assert_eq!(retrieved[1].offset, 1024);
+        assert_eq!(retrieved[1].length, 512);
+    }
+
+    // ============================================================
+    // Metadata edge cases
+    // ============================================================
+
+    #[test]
+    fn test_metadata_overwrite() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        repo.set_metadata(MetadataKey::RemoteUrl, "http://old.example.com")
+            .unwrap();
+        repo.set_metadata(MetadataKey::RemoteUrl, "http://new.example.com")
+            .unwrap();
+
+        let val = repo.get_metadata(MetadataKey::RemoteUrl).unwrap().unwrap();
+        assert_eq!(val, "http://new.example.com");
+    }
+
+    #[test]
+    fn test_metadata_nonexistent_key() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let result = repo.get_metadata(MetadataKey::ApiKey).unwrap();
+        assert!(result.is_none());
+    }
+
+    // ============================================================
+    // BulkImporter
+    // ============================================================
+
+    #[test]
+    fn test_bulk_importer_roundtrip() {
+        // Importer needs a file-backed connection — in-memory rejects.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("oak.db");
+        let repo = SqliteRepository::open(&db_path).unwrap();
+        let branch = Branch::new("main".to_string(), None, None);
+        repo.store_branch(&branch).unwrap();
+
+        let mut importer = repo.bulk_importer(2).unwrap();
+        // Two commits, each with the same single-file manifest. Forces the
+        // tree cache to short-circuit the second commit's subtree inserts.
+        let blob_hash = importer.put_blob(b"hello".to_vec()).unwrap();
+        let entries = vec![ManifestEntry {
+            path: "a.txt".to_string(),
+            blob_hash: blob_hash.clone(),
+            mode: FileMode::Regular,
+        }];
+        let manifest_hash = importer.put_tree(entries.clone()).unwrap();
+
+        let ts = chrono::DateTime::from_timestamp(1_000_000, 0).unwrap();
+        let c1 = Commit::with_timestamp(
+            "main".to_string(),
+            None,
+            None,
+            manifest_hash.clone(),
+            "tester <t@example.com>".to_string(),
+            None,
+            vec![FileChange {
+                path: "a.txt".to_string(),
+                change_type: ChangeType::Added,
+                old_blob_hash: None,
+                new_blob_hash: Some(blob_hash.clone()),
+                old_path: None,
+                old_mode: None,
+                new_mode: None,
+            }],
+            ts,
+        )
+        .unwrap();
+        importer.store_commit(&c1).unwrap();
+        importer.store_commit(&c1).unwrap();
+        // Re-using the same entries on commit 2 exercises the in-memory
+        // tree cache: build_tree returns the same subtree hashes, which the
+        // importer should recognize without re-inserting.
+        let manifest_hash2 = importer.put_tree(entries).unwrap();
+        assert_eq!(manifest_hash, manifest_hash2);
+        let c2 = Commit::with_timestamp(
+            "main".to_string(),
+            Some(c1.hash.clone()),
+            None,
+            manifest_hash2,
+            "tester <t@example.com>".to_string(),
+            None,
+            Vec::new(),
+            ts,
+        )
+        .unwrap();
+        importer.store_commit(&c2).unwrap();
+        importer.finish().unwrap();
+
+        // Both commits durable, blob readable through the normal repo.
+        assert!(repo.has_commit(&c1.hash).unwrap());
+        assert!(repo.has_commit(&c2.hash).unwrap());
+        assert!(repo.has_blob(&blob_hash).unwrap());
+        let manifest = repo.get_manifest(&manifest_hash).unwrap().unwrap();
+        assert_eq!(manifest.entries.len(), 1);
+        assert_eq!(manifest.entries[0].path, "a.txt");
+        let commit_file_count: i64 = repo
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM commit_files WHERE commit_hash = ?1",
+                rusqlite::params![c1.hash.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(commit_file_count, 1);
+    }
+
+    #[test]
+    fn test_bulk_importer_drop_rolls_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("oak.db");
+        let repo = SqliteRepository::open(&db_path).unwrap();
+
+        let commit_hash = {
+            let mut importer = repo.bulk_importer(100).unwrap();
+            let blob_hash = importer.put_blob(b"ephemeral".to_vec()).unwrap();
+            let entries = vec![ManifestEntry {
+                path: "x.txt".to_string(),
+                blob_hash,
+                mode: FileMode::Regular,
+            }];
+            let manifest_hash = importer.put_tree(entries).unwrap();
+            let c = Commit::with_timestamp(
+                "main".to_string(),
+                None,
+                None,
+                manifest_hash,
+                "tester <t@example.com>".to_string(),
+                None,
+                Vec::new(),
+                chrono::DateTime::from_timestamp(0, 0).unwrap(),
+            )
+            .unwrap();
+            importer.store_commit(&c).unwrap();
+            c.hash
+            // importer dropped here without finish() → outer tx rolled back.
+        };
+
+        // The unflushed commit must not be visible.
+        assert!(!repo.has_commit(&commit_hash).unwrap());
+    }
+
+    #[test]
+    fn test_bulk_txn_commit_persists() {
+        // Writes issued inside a bulk transaction are durable after commit —
+        // this is the clone/pull ingest path (store_chunk et al. join the
+        // open BEGIN rather than auto-committing per statement).
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("oak.db");
+        let repo = SqliteRepository::open(&db_path).unwrap();
+
+        let a = hash_bytes(b"aaaa");
+        let b = hash_bytes(b"bbbb");
+        repo.bulk_begin().unwrap();
+        repo.store_chunk(&a, b"aaaa").unwrap();
+        repo.store_chunk(&b, b"bbbb").unwrap();
+        repo.bulk_commit().unwrap();
+
+        assert!(repo.has_chunk(&a).unwrap());
+        assert!(repo.has_chunk(&b).unwrap());
+    }
+
+    #[test]
+    fn test_bulk_txn_rollback_discards() {
+        // bulk_rollback (the BulkTxn guard's drop path) must discard every
+        // write made since bulk_begin, so a failed import leaves nothing
+        // half-applied.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("oak.db");
+        let repo = SqliteRepository::open(&db_path).unwrap();
+
+        let a = hash_bytes(b"aaaa");
+        repo.bulk_begin().unwrap();
+        repo.store_chunk(&a, b"aaaa").unwrap();
+        repo.bulk_rollback();
+
+        assert!(!repo.has_chunk(&a).unwrap());
+        // Connection is usable again afterwards (rollback restored a clean
+        // auto-commit state, not a dangling transaction).
+        repo.store_chunk(&a, b"aaaa").unwrap();
+        assert!(repo.has_chunk(&a).unwrap());
+    }
+
+    #[test]
+    fn test_bulk_txn_flush_checkpoints_then_rollback() {
+        // bulk_flush commits the batch so far and opens the next one. A write
+        // before the flush survives; a write after it (with no further
+        // commit) is rolled back. This is what bounds WAL growth mid-import
+        // without losing already-flushed objects.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("oak.db");
+        let repo = SqliteRepository::open(&db_path).unwrap();
+
+        let before = hash_bytes(b"keep");
+        let after = hash_bytes(b"drop");
+        repo.bulk_begin().unwrap();
+        repo.store_chunk(&before, b"keep").unwrap();
+        repo.bulk_flush().unwrap();
+        repo.store_chunk(&after, b"drop").unwrap();
+        repo.bulk_rollback();
+
+        assert!(repo.has_chunk(&before).unwrap());
+        assert!(!repo.has_chunk(&after).unwrap());
+    }
+
+    #[test]
+    fn test_write_txn_commit_persists() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        repo.write_txn_begin().unwrap();
+        repo.set_metadata(MetadataKey::RemoteUrl, "https://example.com")
+            .unwrap();
+        repo.write_txn_commit().unwrap();
+
+        assert_eq!(
+            repo.get_metadata(MetadataKey::RemoteUrl)
+                .unwrap()
+                .as_deref(),
+            Some("https://example.com")
+        );
+    }
+
+    #[test]
+    fn test_write_txn_rollback_discards() {
+        let repo = SqliteRepository::in_memory().unwrap();
+
+        repo.write_txn_begin().unwrap();
+        repo.set_metadata(MetadataKey::RemoteUrl, "https://example.com")
+            .unwrap();
+        repo.write_txn_rollback();
+
+        assert_eq!(repo.get_metadata(MetadataKey::RemoteUrl).unwrap(), None);
+        repo.set_metadata(MetadataKey::RemoteUrl, "https://example.com")
+            .unwrap();
+        assert_eq!(
+            repo.get_metadata(MetadataKey::RemoteUrl)
+                .unwrap()
+                .as_deref(),
+            Some("https://example.com")
+        );
+    }
+
+    #[test]
+    fn serve_mapping_proof_create_coalesces_and_disjoint_pages_survive_concurrency() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("oak.db");
+        SqliteRepository::open(&db_path).unwrap();
+        let descriptor = crate::protocol::BlobProofDescriptor {
+            hash: "a".repeat(64),
+            size: 2,
+            mapping_digest: "b".repeat(64),
+            total_chunks: 2,
+        };
+        let record = ServeMappingProofRecord {
+            token: "first-token".to_string(),
+            request_digest: "same-request".to_string(),
+            status: "uploading".to_string(),
+            worker_token: None,
+            lease_expires_at: None,
+            created_at: chrono::Utc::now().timestamp(),
+            updated_at: chrono::Utc::now().timestamp(),
+            descriptors: vec![descriptor],
+            base_mapping_digests: vec![None],
+            mappings: vec![std::collections::BTreeMap::new()],
+            verified: Vec::new(),
+            missing: Vec::new(),
+        };
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|worker| {
+                let db_path = db_path.clone();
+                let barrier = barrier.clone();
+                let mut record = record.clone();
+                record.token = format!("token-{worker}");
+                std::thread::spawn(move || {
+                    let repo = SqliteRepository::open(&db_path).unwrap();
+                    barrier.wait();
+                    repo.create_serve_mapping_proof(&record).unwrap()
+                })
+            })
+            .collect();
+        let tokens: Vec<String> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert_eq!(tokens[0], tokens[1]);
+        let token = tokens[0].clone();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|index| {
+                let db_path = db_path.clone();
+                let barrier = barrier.clone();
+                let token = token.clone();
+                std::thread::spawn(move || {
+                    let repo = SqliteRepository::open(&db_path).unwrap();
+                    barrier.wait();
+                    repo.store_serve_mapping_proof_pages(
+                        &token,
+                        &[crate::protocol::BlobProofMappingPage {
+                            blob_index: 0,
+                            first_chunk_index: index,
+                            chunks: vec![crate::protocol::BlobProofChunk {
+                                hash: if index == 0 { "c" } else { "d" }.repeat(64),
+                                offset: index as u64,
+                                size: 1,
+                            }],
+                        }],
+                        chrono::Utc::now().timestamp(),
+                    )
+                    .unwrap();
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let repo = SqliteRepository::open(&db_path).unwrap();
+        let loaded = repo.load_serve_mapping_proofs().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].mappings[0].len(), 2);
+    }
+
+    #[test]
+    fn serve_mapping_proof_finalize_claim_has_one_worker_and_exact_completion_cas() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("oak.db");
+        let repo = SqliteRepository::open(&db_path).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        repo.create_serve_mapping_proof(&ServeMappingProofRecord {
+            token: "proof-token".to_string(),
+            request_digest: "request".to_string(),
+            status: "uploading".to_string(),
+            worker_token: None,
+            lease_expires_at: None,
+            created_at: now,
+            updated_at: now,
+            descriptors: vec![crate::protocol::BlobProofDescriptor {
+                hash: "a".repeat(64),
+                size: 1,
+                mapping_digest: "b".repeat(64),
+                total_chunks: 1,
+            }],
+            base_mapping_digests: vec![None],
+            mappings: vec![std::collections::BTreeMap::new()],
+            verified: Vec::new(),
+            missing: Vec::new(),
+        })
+        .unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let claims: Vec<_> = ["worker-a", "worker-b"]
+            .into_iter()
+            .map(|worker| {
+                let db_path = db_path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let repo = SqliteRepository::open(&db_path).unwrap();
+                    barrier.wait();
+                    repo.claim_serve_mapping_proof("proof-token", worker, now, now + 30)
+                        .unwrap()
+                        .then(|| worker.to_string())
+                })
+            })
+            .collect();
+        let winners: Vec<String> = claims
+            .into_iter()
+            .filter_map(|claim| claim.join().unwrap())
+            .collect();
+        assert_eq!(winners.len(), 1);
+        let winner = &winners[0];
+        let loser = if winner == "worker-a" {
+            "worker-b"
+        } else {
+            "worker-a"
+        };
+        assert!(!repo
+            .heartbeat_serve_mapping_proof("proof-token", loser, now + 1, now + 31)
+            .unwrap());
+        assert!(repo
+            .heartbeat_serve_mapping_proof("proof-token", winner, now + 1, now + 31)
+            .unwrap());
+
+        let replacement = "replacement-worker";
+        assert!(repo
+            .claim_serve_mapping_proof("proof-token", replacement, now + 32, now + 62)
+            .unwrap());
+        assert!(!repo
+            .heartbeat_serve_mapping_proof("proof-token", winner, now + 33, now + 63)
+            .unwrap());
+        assert!(repo
+            .heartbeat_serve_mapping_proof("proof-token", replacement, now + 33, now + 63)
+            .unwrap());
+
+        repo.write_txn_begin().unwrap();
+        let stale = repo.complete_claimed_serve_mapping_proof(
+            "proof-token",
+            winner,
+            &["a".repeat(64)],
+            &[],
+            now + 34,
+        );
+        assert!(stale.is_err());
+        repo.write_txn_rollback();
+        let loaded = repo.load_serve_mapping_proofs().unwrap();
+        assert_eq!(loaded[0].status, "running");
+        assert_eq!(loaded[0].worker_token.as_deref(), Some(replacement));
+    }
+
+    #[test]
+    fn terminal_generation_conflict_is_owner_fenced_pruned_and_does_not_consume_quota() {
+        fn record(token: &str, now: i64) -> ServeMappingProofRecord {
+            ServeMappingProofRecord {
+                token: token.to_string(),
+                request_digest: format!("request-{token}"),
+                status: "uploading".to_string(),
+                worker_token: None,
+                lease_expires_at: None,
+                created_at: now,
+                updated_at: now,
+                descriptors: vec![crate::protocol::BlobProofDescriptor {
+                    hash: "a".repeat(64),
+                    size: 0,
+                    mapping_digest: blake3::hash(&[]).to_hex().to_string(),
+                    total_chunks: 0,
+                }],
+                base_mapping_digests: vec![None],
+                mappings: vec![std::collections::BTreeMap::new()],
+                verified: Vec::new(),
+                missing: Vec::new(),
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = SqliteRepository::open(&tmp.path().join("oak.db")).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        repo.create_serve_mapping_proof(&record("conflict", now))
+            .unwrap();
+        assert!(repo
+            .claim_serve_mapping_proof("conflict", "winner", now, now + 30)
+            .unwrap());
+        assert!(!repo
+            .conflict_claimed_serve_mapping_proof(
+                "conflict",
+                "stale-worker",
+                crate::protocol::MAPPING_PROOF_GENERATION_CONFLICT,
+                now,
+            )
+            .unwrap());
+        assert!(repo
+            .conflict_claimed_serve_mapping_proof(
+                "conflict",
+                "winner",
+                crate::protocol::MAPPING_PROOF_GENERATION_CONFLICT,
+                now,
+            )
+            .unwrap());
+        let terminal = repo
+            .load_serve_mapping_proof_header("conflict")
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal.status, "conflict");
+        assert_eq!(
+            repo.serve_mapping_proof_terminal_code("conflict")
+                .unwrap()
+                .as_deref(),
+            Some(crate::protocol::MAPPING_PROOF_GENERATION_CONFLICT)
+        );
+        assert!(!repo
+            .list_resumable_serve_mapping_proofs(now + 31)
+            .unwrap()
+            .contains(&"conflict".to_string()));
+
+        for index in 0..crate::protocol::STAGED_MAX_ACTIVE_SESSIONS_PER_REPO {
+            repo.create_serve_mapping_proof(&record(&format!("active-{index}"), now))
+                .unwrap();
+        }
+        assert!(repo
+            .create_serve_mapping_proof(&record("over-cap", now))
+            .unwrap_err()
+            .to_string()
+            .contains("too many active"));
+
+        let old = SqliteRepository::open(&tmp.path().join("old.oakdb")).unwrap();
+        let expired = now - crate::protocol::STAGED_ACTIVE_SESSION_TTL_SECS - 1;
+        old.create_serve_mapping_proof(&record("expired-conflict", expired))
+            .unwrap();
+        assert!(old
+            .claim_serve_mapping_proof("expired-conflict", "worker", expired, expired + 1)
+            .unwrap());
+        assert!(old
+            .conflict_claimed_serve_mapping_proof(
+                "expired-conflict",
+                "worker",
+                crate::protocol::MAPPING_PROOF_GENERATION_CONFLICT,
+                expired,
+            )
+            .unwrap());
+        assert!(old
+            .load_serve_mapping_proof_header("expired-conflict")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn serve_mapping_proof_targeted_header_does_not_materialize_declared_pages_or_other_jobs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = SqliteRepository::open(&tmp.path().join("oak.db")).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        for index in 0..crate::protocol::STAGED_MAX_ACTIVE_SESSIONS_PER_REPO {
+            let token = format!("proof-{index}");
+            repo.create_serve_mapping_proof(&ServeMappingProofRecord {
+                token: token.clone(),
+                request_digest: format!("request-{index}"),
+                status: "uploading".to_string(),
+                worker_token: None,
+                lease_expires_at: None,
+                created_at: now,
+                updated_at: now,
+                descriptors: vec![crate::protocol::BlobProofDescriptor {
+                    hash: format!("{index:064x}"),
+                    size: crate::protocol::MAPPING_PROOF_MAX_SET_BYTES,
+                    mapping_digest: "b".repeat(64),
+                    total_chunks: crate::protocol::MAPPING_PROOF_MAX_SET_CHUNK_REFS as u32,
+                }],
+                base_mapping_digests: vec![None],
+                mappings: vec![std::collections::BTreeMap::new()],
+                verified: Vec::new(),
+                missing: Vec::new(),
+            })
+            .unwrap();
+        }
+
+        let header = repo
+            .load_serve_mapping_proof_header("proof-7")
+            .unwrap()
+            .unwrap();
+        assert_eq!(header.descriptors.len(), 1);
+        assert_eq!(
+            header.descriptors[0].total_chunks,
+            crate::protocol::MAPPING_PROOF_MAX_SET_CHUNK_REFS as u32
+        );
+        assert_eq!(header.mappings, vec![std::collections::BTreeMap::new()]);
+        assert!(repo
+            .find_serve_mapping_proof_by_request_digest("request-7")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn expired_running_proofs_do_not_consume_the_active_create_quota() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = SqliteRepository::open(&tmp.path().join("oak.db")).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        for index in 0..crate::protocol::STAGED_MAX_ACTIVE_SESSIONS_PER_REPO {
+            let token = format!("crashed-{index}");
+            repo.create_serve_mapping_proof(&ServeMappingProofRecord {
+                token: token.clone(),
+                request_digest: format!("crashed-request-{index}"),
+                status: "uploading".to_string(),
+                worker_token: None,
+                lease_expires_at: None,
+                created_at: now - 600,
+                updated_at: now - 600,
+                descriptors: vec![crate::protocol::BlobProofDescriptor {
+                    hash: format!("{index:064x}"),
+                    size: 0,
+                    mapping_digest: blake3::hash(&[]).to_hex().to_string(),
+                    total_chunks: 0,
+                }],
+                base_mapping_digests: vec![None],
+                mappings: vec![std::collections::BTreeMap::new()],
+                verified: Vec::new(),
+                missing: Vec::new(),
+            })
+            .unwrap();
+            assert!(repo
+                .claim_serve_mapping_proof(&token, "crashed-worker", now - 300, now - 1)
+                .unwrap());
+        }
+
+        let ninth = ServeMappingProofRecord {
+            token: "new-proof".to_string(),
+            request_digest: "new-request".to_string(),
+            status: "uploading".to_string(),
+            worker_token: None,
+            lease_expires_at: None,
+            created_at: now,
+            updated_at: now,
+            descriptors: vec![crate::protocol::BlobProofDescriptor {
+                hash: "f".repeat(64),
+                size: 0,
+                mapping_digest: blake3::hash(&[]).to_hex().to_string(),
+                total_chunks: 0,
+            }],
+            base_mapping_digests: vec![None],
+            mappings: vec![std::collections::BTreeMap::new()],
+            verified: Vec::new(),
+            missing: Vec::new(),
+        };
+        assert_eq!(
+            repo.create_serve_mapping_proof(&ninth).unwrap(),
+            "new-proof"
+        );
+        assert_eq!(
+            repo.list_resumable_serve_mapping_proofs(now).unwrap().len(),
+            crate::protocol::STAGED_MAX_ACTIVE_SESSIONS_PER_REPO
+        );
+    }
+
+    #[test]
+    fn uploading_proof_expiry_uses_recent_activity_not_creation_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = SqliteRepository::open(&tmp.path().join("oak.db")).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        repo.create_serve_mapping_proof(&ServeMappingProofRecord {
+            token: "active-upload".to_string(),
+            request_digest: "active-upload-request".to_string(),
+            status: "uploading".to_string(),
+            worker_token: None,
+            lease_expires_at: None,
+            created_at: now - 2 * 60 * 60,
+            updated_at: now - 1,
+            descriptors: vec![crate::protocol::BlobProofDescriptor {
+                hash: "a".repeat(64),
+                size: 0,
+                mapping_digest: blake3::hash(&[]).to_hex().to_string(),
+                total_chunks: 0,
+            }],
+            base_mapping_digests: vec![None],
+            mappings: vec![std::collections::BTreeMap::new()],
+            verified: Vec::new(),
+            missing: Vec::new(),
+        })
+        .unwrap();
+
+        assert!(repo
+            .load_serve_mapping_proof_header("active-upload")
+            .unwrap()
+            .is_some());
+    }
+}
