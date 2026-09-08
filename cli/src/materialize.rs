@@ -10,7 +10,10 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use oak_core::{FileMode, IgnorePatterns, Manifest, OakError, Repository, Result};

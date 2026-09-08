@@ -1085,45 +1085,45 @@ impl std::io::Write for MappingPreflightWriter<'_> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn reserve_rechunk_file(file: &std::fs::File, bytes: u64) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::fd::AsRawFd;
-        let length = libc::off_t::try_from(bytes).map_err(|_| {
-            OakError::InvalidArgument("rechunk reservation exceeds platform file size".to_string())
-        })?;
-        let mut reservation = libc::fstore_t {
-            fst_flags: libc::F_ALLOCATEALL,
-            fst_posmode: libc::F_PEOFPOSMODE,
-            fst_offset: 0,
-            fst_length: length,
-            fst_bytesalloc: 0,
-        };
-        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_PREALLOCATE, &mut reservation) } == -1 {
-            return Err(OakError::Io(std::io::Error::last_os_error()));
-        }
-        file.set_len(bytes)?;
+    use std::os::fd::AsRawFd;
+    let length = libc::off_t::try_from(bytes).map_err(|_| {
+        OakError::InvalidArgument("rechunk reservation exceeds platform file size".to_string())
+    })?;
+    let mut reservation = libc::fstore_t {
+        fst_flags: libc::F_ALLOCATEALL,
+        fst_posmode: libc::F_PEOFPOSMODE,
+        fst_offset: 0,
+        fst_length: length,
+        fst_bytesalloc: 0,
+    };
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_PREALLOCATE, &mut reservation) } == -1 {
+        return Err(OakError::Io(std::io::Error::last_os_error()));
     }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        use std::os::fd::AsRawFd;
-        let length = libc::off_t::try_from(bytes).map_err(|_| {
-            OakError::InvalidArgument("rechunk reservation exceeds platform file size".to_string())
-        })?;
-        let status = unsafe { libc::posix_fallocate(file.as_raw_fd(), 0, length) };
-        if status != 0 {
-            return Err(OakError::Io(std::io::Error::from_raw_os_error(status)));
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (file, bytes);
-        return Err(OakError::InvalidArgument(
-            "safe repository-local rechunking is not supported on this platform because Oak cannot reserve physical disk blocks and lock the repository atomically; push from macOS or Linux"
-                .to_string(),
-        ));
+    file.set_len(bytes)?;
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn reserve_rechunk_file(file: &std::fs::File, bytes: u64) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    let length = libc::off_t::try_from(bytes).map_err(|_| {
+        OakError::InvalidArgument("rechunk reservation exceeds platform file size".to_string())
+    })?;
+    let status = unsafe { libc::posix_fallocate(file.as_raw_fd(), 0, length) };
+    if status != 0 {
+        return Err(OakError::Io(std::io::Error::from_raw_os_error(status)));
     }
     Ok(())
+}
+
+#[cfg(not(unix))]
+fn reserve_rechunk_file(_file: &std::fs::File, _bytes: u64) -> Result<()> {
+    Err(OakError::InvalidArgument(
+        "safe repository-local rechunking is not supported on this platform because Oak cannot reserve physical disk blocks and lock the repository atomically; push from macOS or Linux"
+            .to_string(),
+    ))
 }
 
 /// Repository-local, physically reserved rechunk workspace.
@@ -1136,6 +1136,7 @@ struct RechunkWorkspace {
     source: tempfile::NamedTempFile,
     persistence_reservation: tempfile::NamedTempFile,
     persistence_remaining: u64,
+    #[cfg(unix)]
     lock: std::fs::File,
 }
 
@@ -1144,19 +1145,12 @@ impl RechunkWorkspace {
         Self::create_with_reserver(repo, blob_size, reserve_rechunk_file)
     }
 
+    #[cfg(unix)]
     fn create_with_reserver(
         repo: &SqliteRepository,
         blob_size: u64,
         mut reserve: impl FnMut(&std::fs::File, u64) -> Result<()>,
     ) -> Result<Self> {
-        #[cfg(not(unix))]
-        {
-            let _ = (&repo, blob_size, &mut reserve);
-            return Err(OakError::InvalidArgument(
-                "safe repository-local rechunking is not supported on this platform because Oak cannot reserve physical disk blocks and lock the repository atomically; push from macOS or Linux"
-                    .to_string(),
-            ));
-        }
         let db_path = repo.database_path()?;
         let directory = db_path.parent().ok_or_else(|| {
             OakError::InvalidArgument("repository database has no parent directory".to_string())
@@ -1167,12 +1161,9 @@ impl RechunkWorkspace {
             .read(true)
             .write(true)
             .open(directory.join(".oak-rechunk.lock"))?;
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
-                return Err(OakError::Io(std::io::Error::last_os_error()));
-            }
+        use std::os::fd::AsRawFd;
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(OakError::Io(std::io::Error::last_os_error()));
         }
         let source = tempfile::Builder::new()
             .prefix(".oak-rechunk-source-")
@@ -1195,6 +1186,18 @@ impl RechunkWorkspace {
             persistence_remaining: database_and_wal,
             lock,
         })
+    }
+
+    #[cfg(not(unix))]
+    fn create_with_reserver(
+        _repo: &SqliteRepository,
+        _blob_size: u64,
+        _reserve: impl FnMut(&std::fs::File, u64) -> Result<()>,
+    ) -> Result<Self> {
+        Err(OakError::InvalidArgument(
+            "safe repository-local rechunking is not supported on this platform because Oak cannot reserve physical disk blocks and lock the repository atomically; push from macOS or Linux"
+                .to_string(),
+        ))
     }
 
     fn source_file_mut(&mut self) -> &mut std::fs::File {
@@ -5855,17 +5858,20 @@ async fn create_organization_interactive(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::io::{Read, Seek, SeekFrom};
 
+    #[cfg(unix)]
+    use super::reserve_rechunk_file;
     use super::{
         admit_local_blob_descriptor, best_effort_abort_staged_session,
         best_effort_abort_staged_session_with_timeout, collect_planned_objects, commit_to_wire,
         decode_chunk_response_json, link_remote_identity, materialize_planned_blob_batch,
         plan_outgoing_commits, prepare_staged_mapping_proofs, prove_mapping_set_once,
-        remote_missing_staged_blobs, reserve_rechunk_file, select_staged_protocol,
-        send_chunk_request_with_busy_retry, send_mapping_proof_request_with_cap,
-        send_presigned_chunk_put, send_staged_publication_with_cap, server_push_capability,
-        split_staged_blob_batches, split_staged_tree_batches_with_limits, staged_protocol_required,
+        remote_missing_staged_blobs, select_staged_protocol, send_chunk_request_with_busy_retry,
+        send_mapping_proof_request_with_cap, send_presigned_chunk_put,
+        send_staged_publication_with_cap, server_push_capability, split_staged_blob_batches,
+        split_staged_tree_batches_with_limits, staged_protocol_required,
         staged_session_capability_available, upload_mapping_set_once,
         upload_mapping_set_with_restarts, validate_blob_check_missing,
         validate_chunk_check_missing, validate_external_edge_proofs, validate_push_operation_caps,
@@ -7025,6 +7031,7 @@ mod tests {
         assert_eq!(sets[1].len(), 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn rechunk_workspace_is_reserved_before_use_and_removed_on_drop() {
         let blob_size = 1024 * 1024;
@@ -7081,6 +7088,7 @@ mod tests {
         assert!(!capacity_path.exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn rechunk_workspace_cleans_up_after_repository_local_enospc() {
         let (directory, repo) = temp_repo();
@@ -7112,6 +7120,42 @@ mod tests {
         assert!(
             leftovers.is_empty(),
             "temporary reservations leaked: {leftovers:?}"
+        );
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn rechunk_workspace_refuses_before_reservation_or_filesystem_mutation() {
+        let (directory, repo) = temp_repo();
+        let mut before: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        before.sort();
+        let mut reserver_called = false;
+
+        let error = RechunkWorkspace::create_with_reserver(&repo, 1024, |_file, _bytes| {
+            reserver_called = true;
+            Ok(())
+        })
+        .err()
+        .expect("non-Unix rechunk workspace creation must fail closed");
+
+        assert!(
+            !reserver_called,
+            "non-Unix refusal must precede reservation"
+        );
+        assert!(error
+            .to_string()
+            .contains("safe repository-local rechunking is not supported"));
+        let mut after: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        after.sort();
+        assert_eq!(
+            after, before,
+            "refusal must not create scratch or lock files"
         );
     }
 
@@ -7335,6 +7379,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn staged_mapping_preflight_rechunks_before_network_payloads_exist() {
         let (_dir, repo) = temp_repo();
@@ -7406,6 +7451,84 @@ mod tests {
             .flat_map(|chunk| repo.get_chunk(&chunk.hash).unwrap().unwrap())
             .collect();
         assert_eq!(hash_bytes(&rebuilt), blob_hash);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn staged_mapping_preflight_rechunk_refuses_without_mutating_repository() {
+        let (directory, repo) = temp_repo();
+        let parts = [
+            vec![b'a'; 300_000],
+            vec![b'b'; 300_000],
+            vec![b'c'; 300_000],
+        ];
+        let content: Vec<u8> = parts.iter().flatten().copied().collect();
+        let blob_hash = hash_bytes(&content);
+        let mut offset = 0u64;
+        let mut mapping = Vec::new();
+        for bytes in &parts {
+            let hash = hash_bytes(bytes);
+            repo.store_chunk(&hash, bytes).unwrap();
+            mapping.push(ChunkInfo {
+                hash,
+                offset,
+                length: bytes.len() as u32,
+            });
+            offset += bytes.len() as u64;
+        }
+        repo.store_blob(&Blob {
+            hash: blob_hash.clone(),
+            content: Vec::new(),
+            size: content.len() as u64,
+        })
+        .unwrap();
+        repo.store_blob_chunks(&blob_hash, &mapping).unwrap();
+        let mut before_files: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        before_files.sort();
+
+        let mut blobs = vec![BlobData {
+            hash: blob_hash.to_string(),
+            content: Vec::new(),
+            size: content.len() as u64,
+            chunks: mapping
+                .iter()
+                .map(|chunk| ChunkRef {
+                    hash: chunk.hash.to_string(),
+                    offset: chunk.offset,
+                    size: chunk.length,
+                })
+                .collect(),
+            mapping_proof_token: None,
+        }];
+        let mut sources = mapping
+            .iter()
+            .map(|chunk| {
+                PreparedChunk::Stored(ChunkRef {
+                    hash: chunk.hash.to_string(),
+                    offset: chunk.offset,
+                    size: chunk.length,
+                })
+            })
+            .collect();
+
+        let error = prepare_staged_mapping_proofs(&repo, &mut blobs, &mut sources, 2)
+            .err()
+            .expect("non-Unix rechunking must fail before network payload construction");
+
+        assert!(error
+            .to_string()
+            .contains("safe repository-local rechunking is not supported"));
+        assert!(error.to_string().contains("no remote state was mutated"));
+        assert_eq!(repo.get_blob_chunks(&blob_hash).unwrap(), Some(mapping));
+        let mut after_files: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        after_files.sort();
+        assert_eq!(after_files, before_files);
     }
 
     #[test]

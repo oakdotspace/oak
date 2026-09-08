@@ -66,7 +66,7 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use oak_core::{FileMode, Manifest, ManifestEntry, OakError, Result};
+use oak_core::{FileMode, Manifest, OakError, Result};
 use oak_core::{Repository, SqliteRepository};
 use tokio::runtime::Handle;
 use windows::core::{GUID, HRESULT, PCWSTR};
