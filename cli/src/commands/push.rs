@@ -5880,14 +5880,16 @@ mod tests {
         BOOTSTRAP_BATCH_SIZE, STAGED_PUBLICATION_MAX_ATTEMPTS,
         STAGED_PUBLICATION_RESPONSE_MAX_BYTES,
     };
+    #[cfg(unix)]
+    use oak_core::OakError;
     use oak_core::{
         hash_bytes,
         protocol::{
             tree_to_wire, BlobCheckResponse, BlobData, BranchPushData, ChunkRefData as ChunkRef,
             ChunkUploadInfo, PushResponse, StagedPushRequest,
         },
-        Blob, Branch, ChunkInfo, Commit, FileMode, Hash, ManifestEntry, MetadataKey, OakError,
-        Repository, SqliteRepository, Tree, TreeEntry, TreeEntryKind,
+        Blob, Branch, ChunkInfo, Commit, FileMode, Hash, ManifestEntry, MetadataKey, Repository,
+        SqliteRepository, Tree, TreeEntry, TreeEntryKind,
     };
 
     fn temp_repo() -> (tempfile::TempDir, SqliteRepository) {
@@ -7522,7 +7524,18 @@ mod tests {
             .to_string()
             .contains("safe repository-local rechunking is not supported"));
         assert!(error.to_string().contains("no remote state was mutated"));
-        assert_eq!(repo.get_blob_chunks(&blob_hash).unwrap(), Some(mapping));
+        let stored_mapping: Vec<_> = repo
+            .get_blob_chunks(&blob_hash)
+            .unwrap()
+            .expect("mapping must remain present")
+            .into_iter()
+            .map(|chunk| (chunk.hash, chunk.offset, chunk.length))
+            .collect();
+        let expected_mapping: Vec<_> = mapping
+            .into_iter()
+            .map(|chunk| (chunk.hash, chunk.offset, chunk.length))
+            .collect();
+        assert_eq!(stored_mapping, expected_mapping);
         let mut after_files: Vec<_> = std::fs::read_dir(directory.path())
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
