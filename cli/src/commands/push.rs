@@ -7517,8 +7517,7 @@ mod tests {
             .collect();
 
         let error = prepare_staged_mapping_proofs(&repo, &mut blobs, &mut sources, 2)
-            .err()
-            .expect("non-Unix rechunking must fail before network payload construction");
+            .expect_err("non-Unix rechunking must fail before network payload construction");
 
         assert!(error
             .to_string()
