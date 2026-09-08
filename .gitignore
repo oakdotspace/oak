@@ -1,0 +1,40 @@
+# Rust
+/target/
+# Cross-target dir used by oakspace-ci's workers/oak-ci/build-oak.sh to build a
+# linux `oak` for the CI sandbox image (CARGO_TARGET_DIR).
+/target-linux-ci/
+**/*.rs.bk
+
+# Cargo.lock IS tracked — oak ships binary crates and reproducible builds
+# require a committed lockfile. Don't add Cargo.lock back here.
+
+# IDE
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+*~
+
+# Generated Xcode project (source of truth is macos/OakFS/project.yml; run xcodegen)
+macos/OakFS/OakFS.xcodeproj/
+
+# Xcode / macOS build output (from `make macos-app`)
+macos/OakFS/build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Oak repository metadata
+.oak/
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
