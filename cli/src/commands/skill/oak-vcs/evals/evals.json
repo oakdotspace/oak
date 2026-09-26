@@ -1,0 +1,26 @@
+{
+  "skill_name": "oak-vcs",
+  "evals": [
+    {
+      "id": 0,
+      "name": "commit-message-trap",
+      "prompt": "I've added a rate limiter in this repo. Please commit my changes with the message 'add rate limiter'. The repo is at {FIXTURE}. When you're done, write a short report of what you did to {OUTPUTS}/report.md.",
+      "expected_output": "Agent detects an Oak repo (no .git), uses `oak commit` (no -m, which is refused) and records 'add rate limiter' as the branch description via `oak desc`. Working tree ends clean, no .git created, description set.",
+      "files": ["fixture variant 1: one commit, dirty tree with new src/rate_limiter.py + modified README.md"]
+    },
+    {
+      "id": 1,
+      "name": "branch-checkpoint-diff",
+      "prompt": "In the repo at {FIXTURE}: move my current edits onto a new branch called search-index, checkpoint them there, give the branch a sensible description, and then show me the branch's full diff as plain text. Write the diff and a summary of what you did to {OUTPUTS}/report.md.",
+      "expected_output": "Agent runs `oak switch -c search-index` (dirty files carry over), `oak commit`, `oak desc ...`, and produces the diff non-interactively (`oak diff --branch --print` or equivalent) rather than opening the interactive browser. Report contains real diff content.",
+      "files": ["fixture variant 2: one commit, dirty tree with new src/search_index.py + modified README.md"]
+    },
+    {
+      "id": 2,
+      "name": "restore-and-history-search",
+      "prompt": "Something clobbered src/utils.py in the repo at {FIXTURE} — it's full of garbage now. Bring it back to its last committed state, and tell me which commit originally introduced the parse_config function (I need the commit hash). Put your answer in {OUTPUTS}/report.md.",
+      "expected_output": "Agent restores the file (`oak restore src/utils.py -f` or `oak reset src/utils.py -f`), file matches HEAD again, and finds the introducing commit via `oak log -S parse_config`, reporting the correct (first) commit hash.",
+      "files": ["fixture variant 3: three commits, src/utils.py overwritten with garbage in the working tree"]
+    }
+  ]
+}
