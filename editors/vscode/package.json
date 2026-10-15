@@ -1,0 +1,1188 @@
+{
+  "name": "oak-vcs",
+  "displayName": "Oak Version Control",
+  "description": "Oak version control for VS Code: source control view, quick diff, history, branches, sync, merge and CI for oak.space repositories.",
+  "version": "0.1.0",
+  "preview": true,
+  "pricing": "Free",
+  "publisher": "oak",
+  "license": "Apache-2.0",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#ffffff",
+    "theme": "light"
+  },
+  "homepage": "https://oak.space",
+  "bugs": {
+    "url": "https://oak.space/discord"
+  },
+  "repository": {
+    "type": "oak",
+    "url": "https://oak.space/oak/oak",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.86.0"
+  },
+  "categories": [
+    "SCM Providers"
+  ],
+  "keywords": [
+    "oak",
+    "vcs",
+    "scm",
+    "version control",
+    "oak.space"
+  ],
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "workspaceContains:.oak/oak.db",
+    "workspaceContains:*/.oak/oak.db",
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Oak runs the `oak` CLI in the workspace."
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "oak.refresh",
+        "title": "Refresh",
+        "category": "Oak",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "oak.init",
+        "title": "Initialize Repository",
+        "category": "Oak"
+      },
+      {
+        "command": "oak.clone",
+        "title": "Clone Repository...",
+        "category": "Oak"
+      },
+      {
+        "command": "oak.login",
+        "title": "Log In to oak.space",
+        "category": "Oak"
+      },
+      {
+        "command": "oak.showOutput",
+        "title": "Show Output",
+        "category": "Oak"
+      },
+      {
+        "command": "oak.commit",
+        "title": "Checkpoint",
+        "category": "Oak",
+        "icon": "$(check)"
+      },
+      {
+        "command": "oak.commitAndPush",
+        "title": "Checkpoint & Push",
+        "category": "Oak",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "oak.commitSelected",
+        "title": "Checkpoint Selected Files",
+        "category": "Oak",
+        "icon": "$(check)"
+      },
+      {
+        "command": "oak.saveDescription",
+        "title": "Save Branch Description",
+        "category": "Oak",
+        "icon": "$(save)"
+      },
+      {
+        "command": "oak.finish",
+        "title": "Finish Branch (describe, checkpoint, publish)",
+        "category": "Oak",
+        "icon": "$(pass)"
+      },
+      {
+        "command": "oak.openResource",
+        "title": "Open Resource",
+        "category": "Oak"
+      },
+      {
+        "command": "oak.openChange",
+        "title": "Open Changes",
+        "category": "Oak",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "oak.openFile",
+        "title": "Open File",
+        "category": "Oak",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "oak.openHEADFile",
+        "title": "Open File (HEAD)",
+        "category": "Oak"
+      },
+      {
+        "command": "oak.openAllChanges",
+        "title": "Open All Changes",
+        "category": "Oak",
+        "icon": "$(diff-multiple)"
+      },
+      {
+        "command": "oak.discard",
+        "title": "Discard Changes",
+        "category": "Oak",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "oak.discardAll",
+        "title": "Discard All Changes",
+        "category": "Oak",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "oak.push",
+        "title": "Push",
+        "category": "Oak",
+        "icon": "$(repo-push)"
+      },
+      {
+        "command": "oak.pushForce",
+        "title": "Push (Force)",
+        "category": "Oak"
+      },
+      {
+        "command": "oak.publish",
+        "title": "Publish to oak.space...",
+        "category": "Oak",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "oak.pull",
+        "title": "Pull",
+        "category": "Oak",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "oak.pullForce",
+        "title": "Pull (Force)",
+        "category": "Oak"
+      },
+      {
+        "command": "oak.fetch",
+        "title": "Fetch main",
+        "category": "Oak"
+      },
+      {
+        "command": "oak.sync",
+        "title": "Sync",
+        "category": "Oak",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "oak.merge",
+        "title": "Merge Branch into main...",
+        "category": "Oak",
+        "icon": "$(git-merge)"
+      },
+      {
+        "command": "oak.mergeWait",
+        "title": "Merge Branch into main (wait for CI)",
+        "category": "Oak",
+        "icon": "$(git-merge)"
+      },
+      {
+        "command": "oak.switchBranch",
+        "title": "Switch Branch...",
+        "category": "Oak",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "oak.createBranch",
+        "title": "Create Branch...",
+        "category": "Oak",
+        "icon": "$(git-branch-create)"
+      },
+      {
+        "command": "oak.createBranchClean",
+        "title": "Create Branch from Clean main...",
+        "category": "Oak"
+      },
+      {
+        "command": "oak.renameBranch",
+        "title": "Rename Branch...",
+        "category": "Oak"
+      },
+      {
+        "command": "oak.closeBranch",
+        "title": "Close Branch...",
+        "category": "Oak"
+      },
+      {
+        "command": "oak.takeOurs",
+        "title": "Accept Ours (this branch)",
+        "category": "Oak",
+        "icon": "$(arrow-left)"
+      },
+      {
+        "command": "oak.takeTheirs",
+        "title": "Accept Theirs (incoming)",
+        "category": "Oak",
+        "icon": "$(arrow-right)"
+      },
+      {
+        "command": "oak.continue",
+        "title": "Continue Merge/Pull",
+        "category": "Oak",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "oak.abort",
+        "title": "Abort Merge/Pull",
+        "category": "Oak",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "oak.ci.showStatus",
+        "title": "Show CI Status",
+        "category": "Oak",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "oak.ci.showRuns",
+        "title": "Show CI Runs...",
+        "category": "Oak",
+        "icon": "$(list-unordered)"
+      },
+      {
+        "command": "oak.openOnWeb",
+        "title": "Open on oak.space",
+        "category": "Oak",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "oak.openFileOnWeb",
+        "title": "Open File on oak.space",
+        "category": "Oak",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "oak.copyReviewUrl",
+        "title": "Copy Review URL",
+        "category": "Oak",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "oak.viewFileHistory",
+        "title": "View File History",
+        "category": "Oak",
+        "icon": "$(history)"
+      },
+      {
+        "command": "oak.history.clearFilter",
+        "title": "Show All History",
+        "category": "Oak",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "oak.history.refresh",
+        "title": "Refresh History",
+        "category": "Oak",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "oak.history.loadMore",
+        "title": "Load More",
+        "category": "Oak"
+      },
+      {
+        "command": "oak.history.openFileChange",
+        "title": "Open Changes",
+        "category": "Oak",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "oak.history.openCommitChanges",
+        "title": "Open Commit Changes",
+        "category": "Oak",
+        "icon": "$(diff-multiple)"
+      },
+      {
+        "command": "oak.history.copyHash",
+        "title": "Copy Commit Hash",
+        "category": "Oak",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "oak.history.openCommitOnWeb",
+        "title": "Open Commit on oak.space",
+        "category": "Oak",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "oak.history.switchDetached",
+        "title": "Checkout Commit (Detached)",
+        "category": "Oak"
+      },
+      {
+        "command": "oak.history.openFileAtRevision",
+        "title": "Open File at Revision",
+        "category": "Oak",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "oak.history.compareWithWorkingTree",
+        "title": "Compare with Working Tree",
+        "category": "Oak",
+        "icon": "$(compare-changes)"
+      },
+      {
+        "command": "oak.history.restoreFile",
+        "title": "Restore File from This Commit",
+        "category": "Oak",
+        "icon": "$(discard)"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "oak.commitMenu",
+        "label": "Checkpoint"
+      },
+      {
+        "id": "oak.remoteMenu",
+        "label": "Pull, Push"
+      },
+      {
+        "id": "oak.branchMenu",
+        "label": "Branch"
+      },
+      {
+        "id": "oak.conflictMenu",
+        "label": "Conflicts"
+      },
+      {
+        "id": "oak.ciMenu",
+        "label": "CI"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "oak.refresh",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.commit",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.commitAndPush",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.commitSelected",
+          "when": "false"
+        },
+        {
+          "command": "oak.saveDescription",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.finish",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.openResource",
+          "when": "false"
+        },
+        {
+          "command": "oak.openChange",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.openFile",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.openHEADFile",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.openAllChanges",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.discard",
+          "when": "false"
+        },
+        {
+          "command": "oak.discardAll",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.push",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.pushForce",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.publish",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.pull",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.pullForce",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.fetch",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.sync",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.merge",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.mergeWait",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.switchBranch",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.createBranch",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.createBranchClean",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.renameBranch",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.closeBranch",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.takeOurs",
+          "when": "false"
+        },
+        {
+          "command": "oak.takeTheirs",
+          "when": "false"
+        },
+        {
+          "command": "oak.continue",
+          "when": "oak.conflictInProgress"
+        },
+        {
+          "command": "oak.abort",
+          "when": "oak.conflictInProgress"
+        },
+        {
+          "command": "oak.ci.showStatus",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.ci.showRuns",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.openOnWeb",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.openFileOnWeb",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.copyReviewUrl",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.viewFileHistory",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.history.clearFilter",
+          "when": "oak.historyFiltered"
+        },
+        {
+          "command": "oak.history.refresh",
+          "when": "oak.hasRepository"
+        },
+        {
+          "command": "oak.history.loadMore",
+          "when": "false"
+        },
+        {
+          "command": "oak.history.openFileChange",
+          "when": "false"
+        },
+        {
+          "command": "oak.history.openCommitChanges",
+          "when": "false"
+        },
+        {
+          "command": "oak.history.copyHash",
+          "when": "false"
+        },
+        {
+          "command": "oak.history.openCommitOnWeb",
+          "when": "false"
+        },
+        {
+          "command": "oak.history.switchDetached",
+          "when": "false"
+        },
+        {
+          "command": "oak.history.openFileAtRevision",
+          "when": "false"
+        },
+        {
+          "command": "oak.history.compareWithWorkingTree",
+          "when": "false"
+        },
+        {
+          "command": "oak.history.restoreFile",
+          "when": "false"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "oak.commit",
+          "group": "navigation@1",
+          "when": "scmProvider == oak"
+        },
+        {
+          "command": "oak.push",
+          "group": "navigation@1.5",
+          "when": "scmProvider == oak"
+        },
+        {
+          "command": "oak.refresh",
+          "group": "navigation@2",
+          "when": "scmProvider == oak"
+        },
+        {
+          "submenu": "oak.commitMenu",
+          "group": "1_header@1",
+          "when": "scmProvider == oak"
+        },
+        {
+          "submenu": "oak.remoteMenu",
+          "group": "1_header@2",
+          "when": "scmProvider == oak"
+        },
+        {
+          "submenu": "oak.branchMenu",
+          "group": "1_header@3",
+          "when": "scmProvider == oak"
+        },
+        {
+          "submenu": "oak.conflictMenu",
+          "group": "1_header@4",
+          "when": "scmProvider == oak && oak.conflictInProgress"
+        },
+        {
+          "submenu": "oak.ciMenu",
+          "group": "1_header@5",
+          "when": "scmProvider == oak"
+        },
+        {
+          "command": "oak.sync",
+          "group": "2_main@1",
+          "when": "scmProvider == oak"
+        },
+        {
+          "command": "oak.pull",
+          "group": "2_main@2",
+          "when": "scmProvider == oak"
+        },
+        {
+          "command": "oak.push",
+          "group": "2_main@3",
+          "when": "scmProvider == oak"
+        },
+        {
+          "command": "oak.merge",
+          "group": "2_main@4",
+          "when": "scmProvider == oak"
+        },
+        {
+          "command": "oak.openOnWeb",
+          "group": "3_web@1",
+          "when": "scmProvider == oak"
+        },
+        {
+          "command": "oak.showOutput",
+          "group": "4_output@1",
+          "when": "scmProvider == oak"
+        }
+      ],
+      "oak.commitMenu": [
+        {
+          "command": "oak.commit",
+          "group": "1_commit@1"
+        },
+        {
+          "command": "oak.commitAndPush",
+          "group": "1_commit@2"
+        },
+        {
+          "command": "oak.saveDescription",
+          "group": "2_desc@1"
+        },
+        {
+          "command": "oak.finish",
+          "group": "3_finish@1"
+        }
+      ],
+      "oak.remoteMenu": [
+        {
+          "command": "oak.sync",
+          "group": "1_sync@1"
+        },
+        {
+          "command": "oak.pull",
+          "group": "2_pull@1"
+        },
+        {
+          "command": "oak.pullForce",
+          "group": "2_pull@2"
+        },
+        {
+          "command": "oak.fetch",
+          "group": "2_pull@3"
+        },
+        {
+          "command": "oak.push",
+          "group": "3_push@1"
+        },
+        {
+          "command": "oak.pushForce",
+          "group": "3_push@2"
+        },
+        {
+          "command": "oak.publish",
+          "group": "3_push@3"
+        },
+        {
+          "command": "oak.merge",
+          "group": "4_merge@1"
+        },
+        {
+          "command": "oak.mergeWait",
+          "group": "4_merge@2"
+        }
+      ],
+      "oak.branchMenu": [
+        {
+          "command": "oak.switchBranch",
+          "group": "1_switch@1"
+        },
+        {
+          "command": "oak.createBranch",
+          "group": "2_create@1"
+        },
+        {
+          "command": "oak.createBranchClean",
+          "group": "2_create@2"
+        },
+        {
+          "command": "oak.renameBranch",
+          "group": "3_modify@1"
+        },
+        {
+          "command": "oak.closeBranch",
+          "group": "3_modify@2"
+        },
+        {
+          "command": "oak.copyReviewUrl",
+          "group": "4_web@1"
+        }
+      ],
+      "oak.conflictMenu": [
+        {
+          "command": "oak.continue",
+          "group": "1@1"
+        },
+        {
+          "command": "oak.abort",
+          "group": "1@2"
+        }
+      ],
+      "oak.ciMenu": [
+        {
+          "command": "oak.ci.showStatus",
+          "group": "1@1"
+        },
+        {
+          "command": "oak.ci.showRuns",
+          "group": "1@2"
+        }
+      ],
+      "scm/resourceGroup/context": [
+        {
+          "command": "oak.commit",
+          "group": "inline@1",
+          "when": "scmProvider == oak && scmResourceGroup == changes"
+        },
+        {
+          "command": "oak.commitAndPush",
+          "group": "inline@1.5",
+          "when": "scmProvider == oak && scmResourceGroup == changes"
+        },
+        {
+          "command": "oak.discardAll",
+          "group": "inline@2",
+          "when": "scmProvider == oak && scmResourceGroup == changes"
+        },
+        {
+          "command": "oak.openAllChanges",
+          "group": "inline@0",
+          "when": "scmProvider == oak && scmResourceGroup =~ /^(changes|branch)$/"
+        },
+        {
+          "command": "oak.commit",
+          "group": "1_modification@1",
+          "when": "scmProvider == oak && scmResourceGroup == changes"
+        },
+        {
+          "command": "oak.commitAndPush",
+          "group": "1_modification@2",
+          "when": "scmProvider == oak && scmResourceGroup == changes"
+        },
+        {
+          "command": "oak.discardAll",
+          "group": "1_modification@3",
+          "when": "scmProvider == oak && scmResourceGroup == changes"
+        },
+        {
+          "command": "oak.openAllChanges",
+          "group": "2_view@1",
+          "when": "scmProvider == oak && scmResourceGroup =~ /^(changes|branch)$/"
+        },
+        {
+          "command": "oak.continue",
+          "group": "inline@1",
+          "when": "scmProvider == oak && scmResourceGroup == conflicts"
+        },
+        {
+          "command": "oak.abort",
+          "group": "inline@2",
+          "when": "scmProvider == oak && scmResourceGroup == conflicts"
+        }
+      ],
+      "scm/resourceState/context": [
+        {
+          "command": "oak.openFile",
+          "group": "inline@0",
+          "when": "scmProvider == oak && scmResourceState != 'working:deleted' && scmResourceState != 'branch:deleted'"
+        },
+        {
+          "command": "oak.discard",
+          "group": "inline@1",
+          "when": "scmProvider == oak && scmResourceGroup == changes"
+        },
+        {
+          "command": "oak.commitSelected",
+          "group": "inline@2",
+          "when": "scmProvider == oak && scmResourceGroup == changes"
+        },
+        {
+          "command": "oak.takeOurs",
+          "group": "inline@1",
+          "when": "scmProvider == oak && scmResourceGroup == conflicts"
+        },
+        {
+          "command": "oak.takeTheirs",
+          "group": "inline@2",
+          "when": "scmProvider == oak && scmResourceGroup == conflicts"
+        },
+        {
+          "command": "oak.openChange",
+          "group": "navigation@1",
+          "when": "scmProvider == oak"
+        },
+        {
+          "command": "oak.openFile",
+          "group": "navigation@2",
+          "when": "scmProvider == oak"
+        },
+        {
+          "command": "oak.openHEADFile",
+          "group": "navigation@3",
+          "when": "scmProvider == oak && scmResourceGroup == changes"
+        },
+        {
+          "command": "oak.commitSelected",
+          "group": "1_modification@1",
+          "when": "scmProvider == oak && scmResourceGroup == changes"
+        },
+        {
+          "command": "oak.discard",
+          "group": "1_modification@2",
+          "when": "scmProvider == oak && scmResourceGroup == changes"
+        },
+        {
+          "command": "oak.takeOurs",
+          "group": "1_modification@1",
+          "when": "scmProvider == oak && scmResourceGroup == conflicts"
+        },
+        {
+          "command": "oak.takeTheirs",
+          "group": "1_modification@2",
+          "when": "scmProvider == oak && scmResourceGroup == conflicts"
+        },
+        {
+          "command": "oak.viewFileHistory",
+          "group": "3_history@1",
+          "when": "scmProvider == oak"
+        },
+        {
+          "command": "oak.openFileOnWeb",
+          "group": "4_web@1",
+          "when": "scmProvider == oak"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "oak.openChange",
+          "group": "navigation",
+          "when": "oak.hasRepository && resourceScheme == file && scmActiveResourceHasChanges"
+        },
+        {
+          "command": "oak.openFile",
+          "group": "navigation",
+          "when": "resourceScheme == oak"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "oak.viewFileHistory",
+          "group": "2_oak@1",
+          "when": "oak.hasRepository && resourceScheme == file"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "oak.openFileOnWeb",
+          "group": "2_oak@1",
+          "when": "oak.hasRepository && resourceScheme == file"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "oak.viewFileHistory",
+          "group": "7_oak@1",
+          "when": "oak.hasRepository && !explorerResourceIsFolder"
+        },
+        {
+          "command": "oak.openFileOnWeb",
+          "group": "7_oak@2",
+          "when": "oak.hasRepository && !explorerResourceIsFolder"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "oak.history.clearFilter",
+          "group": "navigation@1",
+          "when": "view == oak.history && oak.historyFiltered"
+        },
+        {
+          "command": "oak.viewFileHistory",
+          "group": "navigation@2",
+          "when": "view == oak.history"
+        },
+        {
+          "command": "oak.history.refresh",
+          "group": "navigation@3",
+          "when": "view == oak.history"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "oak.history.openCommitChanges",
+          "group": "inline@1",
+          "when": "view == oak.history && viewItem =~ /^commit/"
+        },
+        {
+          "command": "oak.history.openCommitChanges",
+          "group": "1_open@1",
+          "when": "view == oak.history && viewItem =~ /^commit(:head)?$/"
+        },
+        {
+          "command": "oak.history.copyHash",
+          "group": "2_copy@1",
+          "when": "view == oak.history && viewItem =~ /^commit(:head)?$/"
+        },
+        {
+          "command": "oak.history.openCommitOnWeb",
+          "group": "2_copy@2",
+          "when": "view == oak.history && viewItem =~ /^commit(:head)?$/"
+        },
+        {
+          "command": "oak.history.switchDetached",
+          "group": "3_checkout@1",
+          "when": "view == oak.history && viewItem == commit"
+        },
+        {
+          "command": "oak.history.openFileChange",
+          "group": "inline@1",
+          "when": "view == oak.history && viewItem =~ /^commitFile/"
+        },
+        {
+          "command": "oak.history.openFileChange",
+          "group": "1_open@1",
+          "when": "view == oak.history && viewItem =~ /^commitFile/"
+        },
+        {
+          "command": "oak.history.openFileAtRevision",
+          "group": "1_open@2",
+          "when": "view == oak.history && viewItem =~ /^commitFile/"
+        },
+        {
+          "command": "oak.history.compareWithWorkingTree",
+          "group": "1_open@3",
+          "when": "view == oak.history && viewItem =~ /^commitFile:(added|modified|renamed)/"
+        },
+        {
+          "command": "oak.history.restoreFile",
+          "group": "2_restore@1",
+          "when": "view == oak.history && viewItem =~ /^commitFile/"
+        }
+      ]
+    },
+    "views": {
+      "scm": [
+        {
+          "id": "oak.history",
+          "name": "Oak History",
+          "when": "oak.hasRepository",
+          "icon": "$(history)",
+          "contextualTitle": "Oak"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "scm",
+        "contents": "The folder currently open is not an Oak repository.\n[Initialize Oak Repository](command:oak.init)\n[Clone from oak.space](command:oak.clone)\nLearn more about [Oak](https://oak.space/docs).",
+        "when": "config.oak.enabled && oak.state == initialized && !oak.hasRepository && workbenchState != empty && !oak.missing"
+      },
+      {
+        "view": "scm",
+        "contents": "Open a folder to use Oak, or clone a repository.\n[Clone from oak.space](command:oak.clone)",
+        "when": "config.oak.enabled && oak.state == initialized && workbenchState == empty && !oak.missing"
+      },
+      {
+        "view": "scm",
+        "contents": "The `oak` CLI was not found. Install it from [oak.space](https://oak.space/docs) or set [oak.path](command:workbench.action.openSettings?%5B%22oak.path%22%5D).",
+        "when": "config.oak.enabled && oak.missing"
+      }
+    ],
+    "colors": [
+      {
+        "id": "oakDecoration.addedResourceForeground",
+        "description": "Color for added Oak resources.",
+        "defaults": {
+          "light": "#587c0c",
+          "dark": "#81b88b",
+          "highContrast": "#a1e3ad",
+          "highContrastLight": "#374e06"
+        }
+      },
+      {
+        "id": "oakDecoration.modifiedResourceForeground",
+        "description": "Color for modified Oak resources.",
+        "defaults": {
+          "light": "#895503",
+          "dark": "#E2C08D",
+          "highContrast": "#E2C08D",
+          "highContrastLight": "#895503"
+        }
+      },
+      {
+        "id": "oakDecoration.deletedResourceForeground",
+        "description": "Color for deleted Oak resources.",
+        "defaults": {
+          "light": "#ad0707",
+          "dark": "#c74e39",
+          "highContrast": "#c74e39",
+          "highContrastLight": "#ad0707"
+        }
+      },
+      {
+        "id": "oakDecoration.renamedResourceForeground",
+        "description": "Color for renamed Oak resources.",
+        "defaults": {
+          "light": "#007100",
+          "dark": "#73C991",
+          "highContrast": "#73C991",
+          "highContrastLight": "#007100"
+        }
+      },
+      {
+        "id": "oakDecoration.conflictingResourceForeground",
+        "description": "Color for Oak resources with conflicts.",
+        "defaults": {
+          "light": "#ad0707",
+          "dark": "#e4676b",
+          "highContrast": "#c74e39",
+          "highContrastLight": "#ad0707"
+        }
+      }
+    ],
+    "configuration": {
+      "title": "Oak",
+      "properties": {
+        "oak.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Oak source control."
+        },
+        "oak.path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "scope": "machine",
+          "description": "Path to the `oak` executable. Defaults to `oak` on PATH (also checks ~/.cargo/bin, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin)."
+        },
+        "oak.autoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Refresh status when files in the repository change."
+        },
+        "oak.autofetch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Periodically run `oak fetch` to refresh the local copy of main."
+        },
+        "oak.autofetchPeriod": {
+          "type": "number",
+          "default": 180,
+          "minimum": 30,
+          "description": "Seconds between automatic fetches when `oak.autofetch` is on."
+        },
+        "oak.confirmSync": {
+          "type": "boolean",
+          "default": true,
+          "description": "Confirm before synchronizing (pull, then push)."
+        },
+        "oak.postCommitCommand": {
+          "type": "string",
+          "enum": [
+            "none",
+            "push"
+          ],
+          "enumDescriptions": [
+            "Do nothing after a checkpoint.",
+            "Push the branch after every checkpoint."
+          ],
+          "default": "none",
+          "description": "Action to run after a successful checkpoint."
+        },
+        "oak.promptToPushAfterCommit": {
+          "type": "boolean",
+          "default": true,
+          "description": "After a checkpoint that wasn't pushed, offer to push it (with \"Always Push\" to switch `oak.postCommitCommand` to `push`)."
+        },
+        "oak.promptToSaveFilesBeforeCommit": {
+          "type": "string",
+          "enum": [
+            "always",
+            "prompt",
+            "never"
+          ],
+          "enumDescriptions": [
+            "Save dirty files in the repository automatically before checkpointing.",
+            "Ask before saving.",
+            "Checkpoint what is on disk."
+          ],
+          "default": "always",
+          "description": "Whether unsaved files are saved before a checkpoint."
+        },
+        "oak.showBranchChanges": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a Branch Changes group listing everything the branch changed since it forked from its parent."
+        },
+        "oak.countBadge": {
+          "type": "string",
+          "enum": [
+            "all",
+            "off"
+          ],
+          "default": "all",
+          "description": "Controls the Oak count badge on the Source Control icon."
+        },
+        "oak.decorations.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show change badges and colors in the Explorer and editor tabs."
+        },
+        "oak.ci.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show oak.space CI status for the current branch head in the status bar."
+        },
+        "oak.ci.pollInterval": {
+          "type": "number",
+          "default": 20,
+          "minimum": 5,
+          "description": "Seconds between CI status polls while a run is in progress."
+        },
+        "oak.repositoryScanMaxDepth": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "description": "How many folder levels below each workspace folder to scan for Oak repositories."
+        },
+        "oak.historyPageSize": {
+          "type": "number",
+          "default": 50,
+          "minimum": 5,
+          "description": "Number of commits loaded at a time in the Oak History view."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test:unit": "npm run compile && node --test out/test/unit/*.test.js",
+    "test:integration": "npm run compile && node ./out/test/integration/runTest.js",
+    "test": "npm run test:unit && npm run test:integration",
+    "package": "vsce package --no-dependencies",
+    "publish": "vsce publish --no-dependencies",
+    "publish:ovsx": "ovsx publish --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "1.86.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.0.0",
+    "typescript": "^5.9.3"
+  }
+}

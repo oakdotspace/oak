@@ -1,0 +1,11 @@
+# Every stdout print in the CLI must funnel through `output::write_stdout`
+# (via `output::print_line` / `output::print_raw` / `output::print_json` &c).
+# When stdout's reader vanishes (`oak diff --print | head`), the funnel
+# silences all further output and lets the command run to completion —
+# `println!` would instead panic with "failed printing to stdout: Broken
+# pipe", aborting mutating commands mid-operation. A raw `println!` anywhere
+# in the crate would reintroduce that panic, so the macros are disallowed.
+disallowed-macros = [
+    { path = "std::println", reason = "prints must go through output::print_line (broken-pipe-safe); see output::write_stdout" },
+    { path = "std::print", reason = "prints must go through output::print_raw (broken-pipe-safe); see output::write_stdout" },
+]
