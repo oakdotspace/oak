@@ -1,0 +1,20 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Cargo.lock is not tracked for libraries.
+
+# IDE
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Oak repository metadata
+.oak/
