@@ -1,0 +1,188 @@
+{
+  "meta": {
+    "oak_version": "oak 0.106.0",
+    "git_version": "git version 2.54.0 (Apple Git-157)",
+    "host": "Apple M5 Max",
+    "ncpu": 18,
+    "args": {
+      "oak": "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/oak-new",
+      "corpus": [
+        "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/corpus/ripgrep",
+        "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/corpus/vscode",
+        "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/corpus/linux"
+      ],
+      "forge_corpus": null,
+      "out": "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/results/local-new.json",
+      "lanes": "local",
+      "runs": 7,
+      "duration": 20,
+      "warmup": 3,
+      "concurrency": "1,4,8",
+      "session_commits": 5,
+      "tools": "oak"
+    },
+    "started": "2026-10-29T05:14:46Z"
+  },
+  "local": {
+    "ripgrep": {
+      "oak": {
+        "init_import": {
+          "n": 2,
+          "median_ms": 39.82,
+          "min_ms": 37.93,
+          "p95_ms": 41.71
+        },
+        "status_clean": {
+          "n": 7,
+          "median_ms": 10.5,
+          "min_ms": 10.13,
+          "p95_ms": 20.28
+        },
+        "status_one_modified": {
+          "n": 7,
+          "median_ms": 10.45,
+          "min_ms": 10.27,
+          "p95_ms": 10.84
+        },
+        "diff_one_modified": {
+          "n": 7,
+          "median_ms": 10.16,
+          "min_ms": 10.05,
+          "p95_ms": 10.5
+        },
+        "status_100_untracked": {
+          "n": 7,
+          "median_ms": 11.18,
+          "min_ms": 10.96,
+          "p95_ms": 11.45
+        },
+        "commit_checkpoint": {
+          "n": 7,
+          "median_ms": 16.03,
+          "min_ms": 15.5,
+          "p95_ms": 17.29
+        },
+        "log_10": {
+          "n": 7,
+          "median_ms": 8.74,
+          "min_ms": 8.37,
+          "p95_ms": 9.39
+        },
+        "branch_create": {
+          "n": 7,
+          "median_ms": 13.82,
+          "min_ms": 12.48,
+          "p95_ms": 14.94
+        },
+        "repo_bytes": 1257472
+      }
+    },
+    "vscode": {
+      "oak": {
+        "init_import": {
+          "n": 2,
+          "median_ms": 959.64,
+          "min_ms": 949.88,
+          "p95_ms": 969.4
+        },
+        "status_clean": {
+          "n": 7,
+          "median_ms": 76.69,
+          "min_ms": 62.11,
+          "p95_ms": 87.4
+        },
+        "status_one_modified": {
+          "n": 7,
+          "median_ms": 63.7,
+          "min_ms": 61.52,
+          "p95_ms": 88.81
+        },
+        "diff_one_modified": {
+          "n": 7,
+          "median_ms": 76.95,
+          "min_ms": 69.37,
+          "p95_ms": 94.37
+        },
+        "status_100_untracked": {
+          "n": 7,
+          "median_ms": 66.97,
+          "min_ms": 63.64,
+          "p95_ms": 89.44
+        },
+        "commit_checkpoint": {
+          "n": 7,
+          "median_ms": 189.91,
+          "min_ms": 188.15,
+          "p95_ms": 216.5
+        },
+        "log_10": {
+          "n": 7,
+          "median_ms": 14.13,
+          "min_ms": 13.6,
+          "p95_ms": 15.12
+        },
+        "branch_create": {
+          "n": 7,
+          "median_ms": 14.08,
+          "min_ms": 13.63,
+          "p95_ms": 14.8
+        },
+        "repo_bytes": 122167296
+      }
+    },
+    "linux": {
+      "oak": {
+        "init_import": {
+          "n": 2,
+          "median_ms": 3054.12,
+          "min_ms": 3034.16,
+          "p95_ms": 3074.09
+        },
+        "status_clean": {
+          "n": 7,
+          "median_ms": 149.01,
+          "min_ms": 147.94,
+          "p95_ms": 151.07
+        },
+        "status_one_modified": {
+          "n": 7,
+          "median_ms": 150.04,
+          "min_ms": 147.84,
+          "p95_ms": 151.39
+        },
+        "diff_one_modified": {
+          "n": 7,
+          "median_ms": 172.49,
+          "min_ms": 169.28,
+          "p95_ms": 178.95
+        },
+        "status_100_untracked": {
+          "n": 7,
+          "median_ms": 150.96,
+          "min_ms": 149.36,
+          "p95_ms": 164.84
+        },
+        "commit_checkpoint": {
+          "n": 7,
+          "median_ms": 487.87,
+          "min_ms": 473.19,
+          "p95_ms": 508.67
+        },
+        "log_10": {
+          "n": 7,
+          "median_ms": 28.6,
+          "min_ms": 28.22,
+          "p95_ms": 29.72
+        },
+        "branch_create": {
+          "n": 7,
+          "median_ms": 12.39,
+          "min_ms": 11.94,
+          "p95_ms": 15.7
+        },
+        "repo_bytes": 436215808
+      }
+    }
+  },
+  "forge": {}
+}

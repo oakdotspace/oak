@@ -1,0 +1,274 @@
+{
+  "meta": {
+    "oak_version": "oak 0.106.0",
+    "git_version": "git version 2.54.0 (Apple Git-157)",
+    "host": "Apple M5 Max",
+    "ncpu": 18,
+    "args": {
+      "oak": "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/oak-base",
+      "corpus": [
+        "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/corpus/ripgrep"
+      ],
+      "forge_corpus": null,
+      "out": "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/results/forge-rg-base.json",
+      "lanes": "forge",
+      "runs": 10,
+      "duration": 15.0,
+      "warmup": 3.0,
+      "concurrency": "1,4,8",
+      "session_commits": 5,
+      "tools": "git,oak"
+    },
+    "started": "2026-10-29T04:53:18Z"
+  },
+  "local": {},
+  "forge": {
+    "corpus": "ripgrep",
+    "git": {
+      "seed_push_ms": 101.3,
+      "full_clone_ms": 68.5,
+      "branch": {
+        "1": {
+          "push": {
+            "ops": 182,
+            "ops_per_s": 12.13,
+            "p50_ms": 80.9,
+            "p95_ms": 90.8,
+            "p99_ms": 100.8
+          },
+          "errors": 0
+        },
+        "4": {
+          "push": {
+            "ops": 497,
+            "ops_per_s": 33.13,
+            "p50_ms": 101.2,
+            "p95_ms": 180.3,
+            "p99_ms": 213.0
+          },
+          "errors": 6,
+          "first_error": "command failed (1): git add -A && git commit -qm wip && git push -q -f origin fm-3-7\n\nTo git://127.0.0.1:51885/repo.git\n ! [remote rejected] fm-3-7 -> fm-3-7 (unable to migrate objects to permanent storage)\nerror: failed to push some refs to 'git://127.0.0.1:51885/repo.git'\n"
+        },
+        "8": {
+          "push": {
+            "ops": 567,
+            "ops_per_s": 37.8,
+            "p50_ms": 174.3,
+            "p95_ms": 337.3,
+            "p99_ms": 458.0
+          },
+          "errors": 20,
+          "first_error": "command failed (1): git add -A && git commit -qm wip && git push -q -f origin fm-1-24\n\nTo git://127.0.0.1:51885/repo.git\n ! [remote rejected] fm-1-24 -> fm-1-24 (unable to migrate objects to permanent storage)\nerror: failed to push some refs to 'git://127.0.0.1:51885/repo.git'\n"
+        }
+      },
+      "clone": {
+        "1": {
+          "clone": {
+            "ops": 160,
+            "ops_per_s": 10.67,
+            "p50_ms": 71.6,
+            "p95_ms": 84.7,
+            "p99_ms": 89.4
+          },
+          "errors": 0
+        },
+        "4": {
+          "clone": {
+            "ops": 466,
+            "ops_per_s": 31.07,
+            "p50_ms": 99.7,
+            "p95_ms": 112.8,
+            "p99_ms": 119.7
+          },
+          "errors": 0
+        },
+        "8": {
+          "clone": {
+            "ops": 559,
+            "ops_per_s": 37.27,
+            "p50_ms": 157.6,
+            "p95_ms": 180.2,
+            "p99_ms": 199.3
+          },
+          "errors": 0
+        }
+      },
+      "session": {
+        "1": {
+          "push": {
+            "ops": 114,
+            "ops_per_s": 7.6,
+            "p50_ms": 105.5,
+            "p95_ms": 131.0,
+            "p99_ms": 152.1
+          },
+          "clone": {
+            "ops": 22,
+            "ops_per_s": 1.47,
+            "p50_ms": 73.2,
+            "p95_ms": 91.1,
+            "p99_ms": 94.0
+          },
+          "errors": 0
+        },
+        "4": {
+          "clone": {
+            "ops": 83,
+            "ops_per_s": 5.53,
+            "p50_ms": 81.5,
+            "p95_ms": 103.7,
+            "p99_ms": 130.8
+          },
+          "push": {
+            "ops": 416,
+            "ops_per_s": 27.73,
+            "p50_ms": 112.1,
+            "p95_ms": 158.3,
+            "p99_ms": 195.0
+          },
+          "errors": 1,
+          "first_error": "command failed (1): git add -A && git commit -qm wip && git push -q -f origin s-2-1685\n\nTo git://127.0.0.1:51885/repo.git\n ! [remote rejected] s-2-1685 -> s-2-1685 (unable to migrate objects to permanent storage)\nerror: failed to push some refs to 'git://127.0.0.1:51885/repo.git'\n"
+        },
+        "8": {
+          "push": {
+            "ops": 505,
+            "ops_per_s": 33.67,
+            "p50_ms": 171.1,
+            "p95_ms": 276.5,
+            "p99_ms": 339.3
+          },
+          "clone": {
+            "ops": 105,
+            "ops_per_s": 7.0,
+            "p50_ms": 138.3,
+            "p95_ms": 272.4,
+            "p99_ms": 354.8
+          },
+          "errors": 7,
+          "first_error": "command failed (1): git add -A && git commit -qm wip && git push -q -f origin s-0-1742\n\nTo git://127.0.0.1:51885/repo.git\n ! [remote rejected] s-0-1742 -> s-0-1742 (unable to migrate objects to permanent storage)\nerror: failed to push some refs to 'git://127.0.0.1:51885/repo.git'\n"
+        }
+      }
+    },
+    "oak": {
+      "seed_push_ms": 323.6,
+      "full_clone_ms": 1746.5,
+      "branch": {
+        "1": {
+          "push": {
+            "ops": 117,
+            "ops_per_s": 7.8,
+            "p50_ms": 122.6,
+            "p95_ms": 152.2,
+            "p99_ms": 171.5
+          },
+          "errors": 0
+        },
+        "4": {
+          "push": {
+            "ops": 205,
+            "ops_per_s": 13.67,
+            "p50_ms": 208.3,
+            "p95_ms": 284.2,
+            "p99_ms": 417.4
+          },
+          "errors": 0
+        },
+        "8": {
+          "push": {
+            "ops": 162,
+            "ops_per_s": 10.8,
+            "p50_ms": 378.9,
+            "p95_ms": 517.1,
+            "p99_ms": 563.9
+          },
+          "errors": 0
+        }
+      },
+      "clone": {
+        "1": {
+          "clone": {
+            "ops": 9,
+            "ops_per_s": 0.6,
+            "p50_ms": 1718.7,
+            "p95_ms": 1752.6,
+            "p99_ms": 1752.6
+          },
+          "errors": 0
+        },
+        "4": {
+          "clone": {
+            "ops": 12,
+            "ops_per_s": 0.8,
+            "p50_ms": 5298.4,
+            "p95_ms": 5746.5,
+            "p99_ms": 5746.5
+          },
+          "errors": 0
+        },
+        "8": {
+          "clone": {
+            "ops": 9,
+            "ops_per_s": 0.6,
+            "p50_ms": 9157.7,
+            "p95_ms": 9189.2,
+            "p99_ms": 9189.2
+          },
+          "errors": 0
+        }
+      },
+      "session": {
+        "1": {
+          "clone": {
+            "ops": 7,
+            "ops_per_s": 0.47,
+            "p50_ms": 1661.1,
+            "p95_ms": 1734.5,
+            "p99_ms": 1734.5
+          },
+          "push": {
+            "ops": 31,
+            "ops_per_s": 2.07,
+            "p50_ms": 110.7,
+            "p95_ms": 133.0,
+            "p99_ms": 134.3
+          },
+          "errors": 0
+        },
+        "4": {
+          "clone": {
+            "ops": 8,
+            "ops_per_s": 0.53,
+            "p50_ms": 5912.4,
+            "p95_ms": 6917.5,
+            "p99_ms": 6917.5
+          },
+          "push": {
+            "ops": 40,
+            "ops_per_s": 2.67,
+            "p50_ms": 236.4,
+            "p95_ms": 359.0,
+            "p99_ms": 690.9
+          },
+          "errors": 0
+        },
+        "8": {
+          "clone": {
+            "ops": 9,
+            "ops_per_s": 0.6,
+            "p50_ms": 9066.7,
+            "p95_ms": 10093.4,
+            "p99_ms": 10093.4
+          },
+          "push": {
+            "ops": 40,
+            "ops_per_s": 2.67,
+            "p50_ms": 384.1,
+            "p95_ms": 1238.3,
+            "p99_ms": 1333.9
+          },
+          "errors": 0
+        }
+      }
+    }
+  }
+}
