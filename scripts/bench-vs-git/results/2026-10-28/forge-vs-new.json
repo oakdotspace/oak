@@ -1,0 +1,112 @@
+{
+  "meta": {
+    "oak_version": "oak 0.106.0",
+    "git_version": "git version 2.54.0 (Apple Git-157)",
+    "host": "Apple M5 Max",
+    "ncpu": 18,
+    "args": {
+      "oak": "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/oak-new",
+      "corpus": [
+        "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/corpus/vscode"
+      ],
+      "forge_corpus": null,
+      "out": "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/results/forge-vs-new.json",
+      "lanes": "forge",
+      "runs": 10,
+      "duration": 20.0,
+      "warmup": 5.0,
+      "concurrency": "1,4",
+      "session_commits": 3,
+      "tools": "oak"
+    },
+    "started": "2026-10-29T05:57:57Z"
+  },
+  "local": {},
+  "forge": {
+    "corpus": "vscode",
+    "oak": {
+      "seed_push_ms": 14599.8,
+      "full_clone_ms": 6392.7,
+      "branch": {
+        "1": {
+          "push": {
+            "ops": 40,
+            "ops_per_s": 2.0,
+            "p50_ms": 450.7,
+            "p95_ms": 471.7,
+            "p99_ms": 485.4
+          },
+          "errors": 0
+        },
+        "4": {
+          "push": {
+            "ops": 89,
+            "ops_per_s": 4.45,
+            "p50_ms": 559.3,
+            "p95_ms": 611.2,
+            "p99_ms": 627.6
+          },
+          "errors": 0
+        }
+      },
+      "clone": {
+        "1": {
+          "clone": {
+            "ops": 3,
+            "ops_per_s": 0.15,
+            "p50_ms": 6225.0,
+            "p95_ms": 6225.0,
+            "p99_ms": 6225.0
+          },
+          "errors": 0
+        },
+        "4": {
+          "clone": {
+            "ops": 4,
+            "ops_per_s": 0.2,
+            "p50_ms": 12575.3,
+            "p95_ms": 12575.3,
+            "p99_ms": 12575.3
+          },
+          "errors": 0
+        }
+      },
+      "session": {
+        "1": {
+          "clone": {
+            "ops": 3,
+            "ops_per_s": 0.15,
+            "p50_ms": 6321.7,
+            "p95_ms": 6321.7,
+            "p99_ms": 6321.7
+          },
+          "push": {
+            "ops": 6,
+            "ops_per_s": 0.3,
+            "p50_ms": 455.0,
+            "p95_ms": 459.0,
+            "p99_ms": 459.0
+          },
+          "errors": 0
+        },
+        "4": {
+          "clone": {
+            "ops": 4,
+            "ops_per_s": 0.2,
+            "p50_ms": 12456.3,
+            "p95_ms": 12456.3,
+            "p99_ms": 12456.3
+          },
+          "push": {
+            "ops": 12,
+            "ops_per_s": 0.6,
+            "p50_ms": 602.6,
+            "p95_ms": 705.5,
+            "p99_ms": 705.5
+          },
+          "errors": 0
+        }
+      }
+    }
+  }
+}
