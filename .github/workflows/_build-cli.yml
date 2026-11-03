@@ -1,0 +1,247 @@
+name: Build CLI binaries
+
+# Reusable build of the `oak` CLI for all five release targets (2 darwin, 2
+# linux, 1 windows), one native runner per OS — neither the Linux fuser backend
+# nor the Windows ProjFS backend cross-compiles, so each builds on its own host
+# (see the root Makefile). Wraps `make build-release-macos` /
+# `build-release-linux` / `build-release-windows`. Uploads three artifacts the
+# caller collects: `oak-darwin`, `oak-linux`, and `oak-windows`.
+#
+# Called by release-staging.yml (stable) and canary.yml (canary) with `secrets:
+# inherit`. macOS binaries are Developer-ID-signed when the cert secret is
+# present. Without it: with `require-signing: true` (stable, non-dry-run
+# releases) the job FAILS — ad-hoc-signed darwin binaries must never reach a
+# stable release; with the default `require-signing: false` (canary, dry
+# runs) they're left ad-hoc signed with a warning (the Makefile tolerates
+# this). require-signing also asserts, post-build, that both darwin binaries
+# actually carry a Developer ID signature — catching a cert that imported
+# but failed to resolve.
+#
+# THE SIGNING IDENTITY IS DERIVED FROM THE IMPORTED P12, never configured.
+# `scripts/derive-sign-identity.sh --keychain` requires exactly one VALID
+# "Developer ID Application" identity in the ephemeral signing keychain and
+# prints its SHA-1, which is what `make build-release-macos` then signs with.
+# So the identity cannot drift from the certificate, and it is validated
+# BEFORE the (long) build rather than after it. MACOS_SIGN_IDENTITY, when set,
+# is only an optional cross-check (`--expect`) that fails loudly on
+# disagreement instead of signing with something other than what the operator
+# believes.
+#
+# LEAST PRIVILEGE. Nothing here publishes, so the workflow default is
+# `permissions: {}` and every job re-declares `contents: read` explicitly
+# (explicit so it can be audited per job rather than inferred). Every checkout
+# runs with `persist-credentials: false`, so the runner that holds the
+# Developer ID private key holds no git credential able to write to this
+# repository.
+on:
+  workflow_call:
+    inputs:
+      require-signing:
+        description: "Fail unless both darwin binaries end up Developer-ID-signed (stable releases). Default false keeps the ad-hoc warning path (canary, dry runs)."
+        required: false
+        type: boolean
+        default: false
+
+# Least privilege, workflow-wide: nothing in this workflow publishes, so the
+# default grant is nothing at all and each job opts in to `contents: read`.
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # CREDENTIAL-BEARING: imports the Developer ID P12 into an ephemeral
+  # keychain. Read-only token; no git credential left on the runner.
+  macos:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    env:
+      # Lifted to job scope so the import step's `if:` can test it.
+      MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+    steps:
+      # persist-credentials: false — a runner that will hold the Developer ID
+      # private key must not also hold a git credential for this repository.
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # Fail BEFORE the (long) build when signing is required but the cert
+      # secret is absent — a stable release must never ship ad-hoc-signed
+      # darwin binaries.
+      - name: Require Developer ID cert (stable release)
+        if: ${{ inputs.require-signing && env.MACOS_CERT_P12_BASE64 == '' }}
+        run: |
+          echo "::error::MACOS_CERT_P12_BASE64 is not configured but this build requires Developer-ID signing (stable, non-dry-run release). Configure the signing secrets, or use dry_run for an ad-hoc-signed smoke build."
+          exit 1
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Import the Developer ID Application cert into an ephemeral keychain so
+      # the Makefile's codesign step finds the identity. Skipped (binaries left
+      # ad-hoc signed, which the Makefile warns about but tolerates) when the
+      # cert secret isn't configured.
+      - name: Import Developer ID certificate
+        if: ${{ env.MACOS_CERT_P12_BASE64 != '' }}
+        env:
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/oak-signing.keychain-db"
+          CERT="$RUNNER_TEMP/cert.p12"
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$CERT"
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # Prepend the signing keychain to the search list so codesign sees it.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          rm -f "$CERT"
+
+      # Derive the signing identity FROM THE IMPORTED P12 — the fix for the
+      # rotation incident. Requires exactly one valid "Developer ID
+      # Application" identity in the ephemeral keychain (scoped to it, so a
+      # pre-existing identity elsewhere on the runner cannot satisfy this) and
+      # prints its SHA-1. Runs before the build, so a missing/expired/ambiguous
+      # certificate fails in seconds rather than after a full multi-target
+      # compile. MACOS_SIGN_IDENTITY, if configured, is passed as `--expect`:
+      # a purely optional cross-check that fails loudly when the configured
+      # value disagrees with the certificate that was actually imported.
+      - name: Derive signing identity from the imported certificate
+        id: sign-identity
+        if: ${{ env.MACOS_CERT_P12_BASE64 != '' }}
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/oak-signing.keychain-db"
+          # No arrays: the runner's /bin/bash is 3.2, where expanding an empty
+          # array under `set -u` is itself an error.
+          if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
+            identity="$(bash scripts/derive-sign-identity.sh --keychain "$KEYCHAIN" --expect "$MACOS_SIGN_IDENTITY")"
+          else
+            identity="$(bash scripts/derive-sign-identity.sh --keychain "$KEYCHAIN")"
+          fi
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+
+      - name: Build + sign macOS binaries
+        env:
+          SIGN_IDENTITY: ${{ steps.sign-identity.outputs.identity }}
+        run: |
+          set -euo pipefail
+          # Empty only when no cert secret is configured (canary / dry runs);
+          # the Makefile then leaves the binaries ad-hoc signed with a warning.
+          # Non-empty means it was derived from the imported P12, and the
+          # Makefile fails hard if it is not a valid keychain identity.
+          make build-release-macos SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+
+      # Belt-and-braces for require-signing: assert the binaries that will be
+      # uploaded actually carry a Developer ID signature. The derive step and
+      # the Makefile now both fail closed rather than warning, so this should
+      # be unreachable — it stays as an independent check on the bytes that
+      # are actually about to be uploaded.
+      - name: Verify Developer ID signatures (stable release)
+        if: ${{ inputs.require-signing }}
+        run: |
+          set -euo pipefail
+          for b in oak-darwin-arm64 oak-darwin-x86_64; do
+            if ! codesign --display --verbose=2 "target/releases/$b" 2>&1 | grep -q "Authority=Developer ID Application"; then
+              echo "::error::target/releases/$b is not Developer-ID signed (ad-hoc or unsigned) — stable releases must ship Developer-ID-signed darwin binaries."
+              codesign --display --verbose=2 "target/releases/$b" || true
+              exit 1
+            fi
+          done
+          echo "Both darwin binaries are Developer-ID signed."
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: oak-darwin
+          if-no-files-found: error
+          path: |
+            target/releases/oak-darwin-arm64
+            target/releases/oak-darwin-x86_64
+
+  # No credential of any kind: read-only token.
+  linux:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Zig is the cross-linker cargo-zigbuild drives; it's what lets us pin the
+      # glibc floor (2.31) and cross to arm64 from an x86_64 runner.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      # The Linux fuser backend never links libfuse (it execs fusermount3 at
+      # runtime), so the binary runs without fuse3 installed; only `oak mount`
+      # itself needs it. Built on a native Linux runner because that libfuse-free
+      # build does not cross-compile.
+      - name: Build Linux binaries (glibc 2.31)
+        run: make build-release-linux
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: oak-linux
+          if-no-files-found: error
+          path: |
+            target/releases/oak-linux-x86_64
+            target/releases/oak-linux-arm64
+
+  # The Windows `oak mount` backend is ProjFS (the `windows` crate's Win32
+  # bindings — no FUSE, no external helper), so the binary is self-contained.
+  # Built on a native Windows runner: the ProjFS bindings link against Win32 and
+  # cannot cross-compile. reqwest is on rustls + the `ring` crypto provider, so
+  # no NASM/CMake/C toolchain is needed beyond the MSVC linker the runner ships.
+  # The Makefile target runs through Git Bash (shell: bash) for parity with the
+  # macOS/Linux halves.
+  #
+  # No credential of any kind either: read-only token.
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Windows binary (x86_64-msvc)
+        shell: bash
+        run: make build-release-windows
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: oak-windows
+          if-no-files-found: error
+          path: |
+            target/releases/oak-windows-x86_64.exe
