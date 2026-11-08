@@ -1,0 +1,149 @@
+{
+  "meta": {
+    "oak_version": "oak 0.106.0",
+    "git_version": "git version 2.54.0 (Apple Git-157)",
+    "host": "Apple M5 Max",
+    "ncpu": 18,
+    "args": {
+      "oak": "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/oak-new",
+      "corpus": [
+        "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/corpus/ripgrep"
+      ],
+      "forge_corpus": null,
+      "out": "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/results/forge-rg-new.json",
+      "lanes": "forge",
+      "runs": 10,
+      "duration": 15.0,
+      "warmup": 3.0,
+      "concurrency": "1,4,8",
+      "session_commits": 5,
+      "tools": "oak"
+    },
+    "started": "2026-10-29T05:16:17Z"
+  },
+  "local": {},
+  "forge": {
+    "corpus": "ripgrep",
+    "oak": {
+      "seed_push_ms": 171.0,
+      "full_clone_ms": 77.8,
+      "branch": {
+        "1": {
+          "push": {
+            "ops": 165,
+            "ops_per_s": 11.0,
+            "p50_ms": 91.3,
+            "p95_ms": 100.4,
+            "p99_ms": 104.5
+          },
+          "errors": 0
+        },
+        "4": {
+          "push": {
+            "ops": 323,
+            "ops_per_s": 21.53,
+            "p50_ms": 182.0,
+            "p95_ms": 203.5,
+            "p99_ms": 209.3
+          },
+          "errors": 0
+        },
+        "8": {
+          "push": {
+            "ops": 290,
+            "ops_per_s": 19.33,
+            "p50_ms": 409.5,
+            "p95_ms": 452.0,
+            "p99_ms": 479.9
+          },
+          "errors": 0
+        }
+      },
+      "clone": {
+        "1": {
+          "clone": {
+            "ops": 146,
+            "ops_per_s": 9.73,
+            "p50_ms": 86.0,
+            "p95_ms": 97.6,
+            "p99_ms": 100.7
+          },
+          "errors": 0
+        },
+        "4": {
+          "clone": {
+            "ops": 355,
+            "ops_per_s": 23.67,
+            "p50_ms": 136.4,
+            "p95_ms": 183.9,
+            "p99_ms": 259.2
+          },
+          "errors": 0
+        },
+        "8": {
+          "clone": {
+            "ops": 428,
+            "ops_per_s": 28.53,
+            "p50_ms": 221.8,
+            "p95_ms": 316.1,
+            "p99_ms": 362.4
+          },
+          "errors": 0
+        }
+      },
+      "session": {
+        "1": {
+          "push": {
+            "ops": 133,
+            "ops_per_s": 8.87,
+            "p50_ms": 84.6,
+            "p95_ms": 100.8,
+            "p99_ms": 112.7
+          },
+          "clone": {
+            "ops": 26,
+            "ops_per_s": 1.73,
+            "p50_ms": 88.3,
+            "p95_ms": 103.2,
+            "p99_ms": 105.1
+          },
+          "errors": 0
+        },
+        "4": {
+          "push": {
+            "ops": 223,
+            "ops_per_s": 14.87,
+            "p50_ms": 207.0,
+            "p95_ms": 246.2,
+            "p99_ms": 274.8
+          },
+          "clone": {
+            "ops": 44,
+            "ops_per_s": 2.93,
+            "p50_ms": 226.6,
+            "p95_ms": 354.2,
+            "p99_ms": 386.8
+          },
+          "errors": 0
+        },
+        "8": {
+          "push": {
+            "ops": 235,
+            "ops_per_s": 15.67,
+            "p50_ms": 375.6,
+            "p95_ms": 476.7,
+            "p99_ms": 489.0
+          },
+          "clone": {
+            "ops": 48,
+            "ops_per_s": 3.2,
+            "p50_ms": 517.2,
+            "p95_ms": 660.2,
+            "p99_ms": 716.8
+          },
+          "errors": 0
+        }
+      }
+    }
+  }
+}

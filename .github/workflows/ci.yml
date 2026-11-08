@@ -1,0 +1,112 @@
+name: CI
+
+# Format, lint, and test the oak workspace (oakvcs-core + oakvcs-cli) on every
+# push to oak and every pull request. The `check` job mirrors `make ci`; the
+# `shipped-targets` job extends coverage to the two release targets no other
+# per-commit job compiles (see its comment).
+on:
+  push:
+    branches: [oak]
+  pull_request:
+
+# Least privilege: CI reads the repository and nothing else.
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # Pin to the repo's rust-toolchain.toml channel (1.94) with rustfmt+clippy.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - uses: taiki-e/install-action@nextest
+
+      # nextest runs each test in its own process. The mount tests set a
+      # process-global OAK_MOUNTS_ROOT and race under `cargo test`'s in-process
+      # threads; per-process isolation makes them deterministic.
+      - name: Test
+        run: cargo nextest run --workspace
+
+  # Compile-and-lint gate for the release targets nothing else exercises per
+  # commit. `_build-cli.yml` ships five binaries, but the `check` job above only
+  # covers linux-x86_64 — so the ProjFS mount backend (cfg(windows), the
+  # `windows` crate's Win32 bindings) and the Intel-darwin build were compiled
+  # for the first time inside a release or canary run, i.e. after the version
+  # was already cut. These two legs move that failure forward to the PR.
+  #
+  # Intentionally check + lint only, no tests: the point is catching a
+  # target-gated compile or lint break, and the mount tests are backend- and
+  # host-specific (OAK_MOUNTS_ROOT, FSKit/FUSE/ProjFS) rather than something a
+  # cross-compiled or fresh-runner leg can meaningfully run. `cargo clippy`
+  # type-checks everything `cargo check` would, so one step covers both;
+  # `--all-targets` extends it to tests, benches, and examples.
+  shipped-targets:
+    name: check (${{ matrix.target }})
+    strategy:
+      # Don't let one platform's failure mask the other's — a Windows break and
+      # an Intel-darwin break have nothing to do with each other, and we want
+      # both verdicts in a single run.
+      fail-fast: false
+      matrix:
+        include:
+          # Cross-compiled from the arm64 macos runner; the linker and SDK ship
+          # with Xcode, so no extra setup beyond the rustup target.
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          # Native on the x86_64 windows runner. reqwest is on rustls + `ring`
+          # (see the root Cargo.toml notes), so the MSVC linker the runner
+          # ships is the whole toolchain requirement — no NASM or CMake.
+          #
+          # Note this leg compiles dev-dependencies the release build never
+          # touches: `--all-targets` pulls in the CLI's `zstd` dev-dep, whose
+          # zstd-sys build script drives cc-rs over C sources. That needs
+          # cl.exe + the Windows SDK, which windows-latest provides — but it is
+          # the one plausible first-run failure here, and it says nothing about
+          # the shipped binary. If it ever breaks, drop `--all-targets` on this
+          # leg rather than pinning a C toolchain.
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # Same 1.94 pin as the `check` job and `_build-cli.yml`; clippy only,
+      # since rustfmt is target-independent and already enforced above.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+          targets: ${{ matrix.target }}
+          components: clippy
+
+      # Distinct cache per target: the two legs share no artifacts, and the
+      # default key would collide for anything running on the same OS.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Clippy (${{ matrix.target }})
+        run: cargo clippy --workspace --all-targets --target ${{ matrix.target }} -- -D warnings

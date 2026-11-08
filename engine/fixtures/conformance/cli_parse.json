@@ -1,0 +1,2103 @@
+{
+  "cases": [
+    {
+      "name": "status/status_clean_unborn",
+      "request": {
+        "args": {
+          "action": "status",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"branch\":\"dev-f7a748\",\"branch_description\":null,\"parent\":\"main\",\"head\":null,\"branch_status\":\"open\",\"unmerged_commit_count\":0,\"changes\":[{\"path\":\"Assets/Art/hero.png\",\"status\":\"added\"},{\"path\":\"Assets/Art/hero.png.meta\",\"status\":\"added\"},{\"path\":\"a.txt\",\"status\":\"added\"},{\"path\":\"b.uasset\",\"status\":\"added\"}],\"working_changes\":{\"changes\":[{\"path\":\"Assets/Art/hero.png\",\"status\":\"added\"},{\"path\":\"Assets/Art/hero.png.meta\",\"status\":\"added\"},{\"path\":\"a.txt\",\"status\":\"added\"},{\"path\":\"b.uasset\",\"status\":\"added\"}]},\"merge_in_progress\":false,\"sync_in_progress\":false,\"progress_state\":{\"in_progress\":false},\"repo_owner\":null,\"repo_name\":\"a\",\"remote_url\":null,\"repository_root\":\"/tmp/oak-capture/a\",\"web_url\":null,\"review_url\":null}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "dev-f7a748",
+          "branch_changes": [],
+          "branch_description": null,
+          "branch_status": "open",
+          "changes": [
+            {
+              "old_path": null,
+              "path": "Assets/Art/hero.png",
+              "status": "added"
+            },
+            {
+              "old_path": null,
+              "path": "Assets/Art/hero.png.meta",
+              "status": "added"
+            },
+            {
+              "old_path": null,
+              "path": "a.txt",
+              "status": "added"
+            },
+            {
+              "old_path": null,
+              "path": "b.uasset",
+              "status": "added"
+            }
+          ],
+          "conflict_paths": [],
+          "head": null,
+          "merge_in_progress": false,
+          "next_commands": [],
+          "parent": "main",
+          "remote_url": null,
+          "repo_name": "a",
+          "repo_owner": null,
+          "repository_root": "/tmp/oak-capture/a",
+          "review_url": null,
+          "sync_in_progress": false,
+          "unmerged_commit_count": 0,
+          "web_url": null
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "status/status_clean",
+      "request": {
+        "args": {
+          "action": "status",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"branch\":\"dev-f7a748\",\"branch_description\":null,\"parent\":\"main\",\"head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"branch_status\":\"open\",\"unmerged_commit_count\":1,\"changes\":[],\"working_changes\":{\"base\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"changes\":[]},\"branch_changes\":{\"head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"changes\":[{\"path\":\"Assets/Art/hero.png\",\"status\":\"added\"},{\"path\":\"Assets/Art/hero.png.meta\",\"status\":\"added\"},{\"path\":\"a.txt\",\"status\":\"added\"},{\"path\":\"b.uasset\",\"status\":\"added\"}],\"caveats\":[\"Against branch 'main' has no local head and no branch fork point was found; compared against the empty tree.\",\"Local main may be absent because Oak treats main as server-owned; this command does not fetch it.\"]},\"merge_in_progress\":false,\"sync_in_progress\":false,\"progress_state\":{\"in_progress\":false},\"repo_owner\":\"acme\",\"repo_name\":\"game\",\"remote_url\":\"http://127.0.0.1:8765\",\"repository_root\":\"/tmp/oak-capture/a\",\"web_url\":\"http://127.0.0.1:8765/acme/game\",\"review_url\":\"http://127.0.0.1:8765/acme/game/branches/dev-f7a748\"}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "dev-f7a748",
+          "branch_changes": [
+            {
+              "old_path": null,
+              "path": "Assets/Art/hero.png",
+              "status": "added"
+            },
+            {
+              "old_path": null,
+              "path": "Assets/Art/hero.png.meta",
+              "status": "added"
+            },
+            {
+              "old_path": null,
+              "path": "a.txt",
+              "status": "added"
+            },
+            {
+              "old_path": null,
+              "path": "b.uasset",
+              "status": "added"
+            }
+          ],
+          "branch_description": null,
+          "branch_status": "open",
+          "changes": [],
+          "conflict_paths": [],
+          "head": "5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1",
+          "merge_in_progress": false,
+          "next_commands": [],
+          "parent": "main",
+          "remote_url": "http://127.0.0.1:8765",
+          "repo_name": "game",
+          "repo_owner": "acme",
+          "repository_root": "/tmp/oak-capture/a",
+          "review_url": "http://127.0.0.1:8765/acme/game/branches/dev-f7a748",
+          "sync_in_progress": false,
+          "unmerged_commit_count": 1,
+          "web_url": "http://127.0.0.1:8765/acme/game"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "status/status_dirty",
+      "request": {
+        "args": {
+          "action": "status",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"branch\":\"feature-x\",\"branch_description\":null,\"parent\":\"main\",\"head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"branch_status\":\"open\",\"unmerged_commit_count\":0,\"changes\":[{\"path\":\"Assets/Art/villain.png\",\"status\":\"renamed\",\"old_path\":\"Assets/Art/hero.png\"},{\"path\":\"a.txt\",\"status\":\"modified\"},{\"path\":\"b.uasset\",\"status\":\"deleted\"},{\"path\":\"new.txt\",\"status\":\"added\"}],\"working_changes\":{\"base\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"changes\":[{\"path\":\"Assets/Art/villain.png\",\"status\":\"renamed\",\"old_path\":\"Assets/Art/hero.png\"},{\"path\":\"a.txt\",\"status\":\"modified\"},{\"path\":\"b.uasset\",\"status\":\"deleted\"},{\"path\":\"new.txt\",\"status\":\"added\"}]},\"branch_changes\":{\"base\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"changes\":[]},\"merge_in_progress\":false,\"sync_in_progress\":false,\"progress_state\":{\"in_progress\":false},\"repo_owner\":\"acme\",\"repo_name\":\"game\",\"remote_url\":\"http://127.0.0.1:8765\",\"repository_root\":\"/tmp/oak-capture/a\",\"web_url\":\"http://127.0.0.1:8765/acme/game\",\"review_url\":\"http://127.0.0.1:8765/acme/game/branches/feature-x\"}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "feature-x",
+          "branch_changes": [],
+          "branch_description": null,
+          "branch_status": "open",
+          "changes": [
+            {
+              "old_path": "Assets/Art/hero.png",
+              "path": "Assets/Art/villain.png",
+              "status": "renamed"
+            },
+            {
+              "old_path": null,
+              "path": "a.txt",
+              "status": "modified"
+            },
+            {
+              "old_path": null,
+              "path": "b.uasset",
+              "status": "deleted"
+            },
+            {
+              "old_path": null,
+              "path": "new.txt",
+              "status": "added"
+            }
+          ],
+          "conflict_paths": [],
+          "head": "5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1",
+          "merge_in_progress": false,
+          "next_commands": [],
+          "parent": "main",
+          "remote_url": "http://127.0.0.1:8765",
+          "repo_name": "game",
+          "repo_owner": "acme",
+          "repository_root": "/tmp/oak-capture/a",
+          "review_url": "http://127.0.0.1:8765/acme/game/branches/feature-x",
+          "sync_in_progress": false,
+          "unmerged_commit_count": 0,
+          "web_url": "http://127.0.0.1:8765/acme/game"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "status/status_conflict",
+      "request": {
+        "args": {
+          "action": "status",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"branch\":\"mine\",\"branch_description\":null,\"parent\":\"main\",\"head\":\"439c8ea7d8d9daed50d2f7a5e17efc12a9f573c678dca14740da5eb7ed8bdf57\",\"branch_status\":\"open\",\"unmerged_commit_count\":1,\"changes\":[{\"path\":\"a.txt\",\"status\":\"modified\"}],\"working_changes\":{\"base\":\"439c8ea7d8d9daed50d2f7a5e17efc12a9f573c678dca14740da5eb7ed8bdf57\",\"changes\":[{\"path\":\"a.txt\",\"status\":\"modified\"}]},\"branch_changes\":{\"base\":\"90b33f32dd21cb823868a1a322c024021ad36bc827a87f44f41c6c6ed8d1bd1c\",\"head\":\"439c8ea7d8d9daed50d2f7a5e17efc12a9f573c678dca14740da5eb7ed8bdf57\",\"changes\":[{\"path\":\"a.txt\",\"status\":\"modified\"}]},\"merge_in_progress\":false,\"sync_in_progress\":true,\"progress_state\":{\"in_progress\":true,\"kind\":\"sync\",\"conflict_paths\":[\"a.txt\"],\"next_commands\":[\"oak pull --continue\",\"oak pull --abort\"]},\"repo_owner\":\"acme\",\"repo_name\":\"game\",\"remote_url\":\"http://127.0.0.1:8765\",\"repository_root\":\"/tmp/oak-capture/a\",\"web_url\":\"http://127.0.0.1:8765/acme/game\",\"review_url\":\"http://127.0.0.1:8765/acme/game/branches/mine\"}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "mine",
+          "branch_changes": [
+            {
+              "old_path": null,
+              "path": "a.txt",
+              "status": "modified"
+            }
+          ],
+          "branch_description": null,
+          "branch_status": "open",
+          "changes": [
+            {
+              "old_path": null,
+              "path": "a.txt",
+              "status": "modified"
+            }
+          ],
+          "conflict_paths": [
+            "a.txt"
+          ],
+          "head": "439c8ea7d8d9daed50d2f7a5e17efc12a9f573c678dca14740da5eb7ed8bdf57",
+          "merge_in_progress": false,
+          "next_commands": [
+            "oak pull --continue",
+            "oak pull --abort"
+          ],
+          "parent": "main",
+          "remote_url": "http://127.0.0.1:8765",
+          "repo_name": "game",
+          "repo_owner": "acme",
+          "repository_root": "/tmp/oak-capture/a",
+          "review_url": "http://127.0.0.1:8765/acme/game/branches/mine",
+          "sync_in_progress": true,
+          "unmerged_commit_count": 1,
+          "web_url": "http://127.0.0.1:8765/acme/game"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "status/status_not_repo",
+      "request": {
+        "args": {
+          "action": "status",
+          "exit_code": 1,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"error\":{\"code\":\"repo_not_found\",\"message\":\"Repository not found. Run 'oak init' to create a repository here, or 'oak clone <repo>' to clone an existing one.\",\"conflict_paths\":[],\"recommended_next_commands\":[\"oak init\",\"oak clone <repo>\"]}}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "cli_failed",
+          "conflict_paths": [],
+          "exit_code": 1,
+          "message": "Repository not found. Run 'oak init' to create a repository here, or 'oak clone <repo>' to clone an existing one.",
+          "next_commands": [
+            "oak init",
+            "oak clone <repo>"
+          ],
+          "oak_code": "repo_not_found",
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "info/info",
+      "request": {
+        "args": {
+          "action": "info",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"branch\":\"dev-f7a748\",\"branch_description\":null,\"parent\":\"main\",\"head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"branch_status\":\"open\",\"repo_owner\":\"acme\",\"repo_name\":\"game\",\"remote_url\":\"http://127.0.0.1:8765\",\"merge_in_progress\":false,\"sync_in_progress\":false,\"progress_state\":{\"in_progress\":false},\"repository_root\":\"/tmp/oak-capture/a\",\"web_url\":\"http://127.0.0.1:8765/acme/game\",\"review_url\":\"http://127.0.0.1:8765/acme/game/branches/dev-f7a748\"}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "dev-f7a748",
+          "branch_description": null,
+          "branch_status": "open",
+          "head": "5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1",
+          "merge_in_progress": false,
+          "parent": "main",
+          "remote_url": "http://127.0.0.1:8765",
+          "repo_name": "game",
+          "repo_owner": "acme",
+          "repository_root": "/tmp/oak-capture/a",
+          "review_url": "http://127.0.0.1:8765/acme/game/branches/dev-f7a748",
+          "sync_in_progress": false,
+          "web_url": "http://127.0.0.1:8765/acme/game"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "info/info_branch",
+      "request": {
+        "args": {
+          "action": "info",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"branch\":\"feature-x\",\"branch_description\":\"first line\\n\\nsecond line\\n\\nfrom stdin\\n\",\"parent\":\"main\",\"head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"branch_status\":\"open\",\"repo_owner\":\"acme\",\"repo_name\":\"game\",\"remote_url\":\"http://127.0.0.1:8765\",\"merge_in_progress\":false,\"sync_in_progress\":false,\"progress_state\":{\"in_progress\":false},\"repository_root\":\"/tmp/oak-capture/a\",\"web_url\":\"http://127.0.0.1:8765/acme/game\",\"review_url\":\"http://127.0.0.1:8765/acme/game/branches/feature-x\"}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "feature-x",
+          "branch_description": "first line\n\nsecond line\n\nfrom stdin\n",
+          "branch_status": "open",
+          "head": "5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1",
+          "merge_in_progress": false,
+          "parent": "main",
+          "remote_url": "http://127.0.0.1:8765",
+          "repo_name": "game",
+          "repo_owner": "acme",
+          "repository_root": "/tmp/oak-capture/a",
+          "review_url": "http://127.0.0.1:8765/acme/game/branches/feature-x",
+          "sync_in_progress": false,
+          "web_url": "http://127.0.0.1:8765/acme/game"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "info/info_not_repo",
+      "request": {
+        "args": {
+          "action": "info",
+          "exit_code": 1,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"error\":{\"code\":\"repo_not_found\",\"message\":\"Repository not found. Run 'oak init' to create a repository here, or 'oak clone <repo>' to clone an existing one.\",\"conflict_paths\":[],\"recommended_next_commands\":[\"oak init\",\"oak clone <repo>\"]}}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "cli_failed",
+          "conflict_paths": [],
+          "exit_code": 1,
+          "message": "Repository not found. Run 'oak init' to create a repository here, or 'oak clone <repo>' to clone an existing one.",
+          "next_commands": [
+            "oak init",
+            "oak clone <repo>"
+          ],
+          "oak_code": "repo_not_found",
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "desc_get/info_branch",
+      "request": {
+        "args": {
+          "action": "desc_get",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"branch\":\"feature-x\",\"branch_description\":\"first line\\n\\nsecond line\\n\\nfrom stdin\\n\",\"parent\":\"main\",\"head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"branch_status\":\"open\",\"repo_owner\":\"acme\",\"repo_name\":\"game\",\"remote_url\":\"http://127.0.0.1:8765\",\"merge_in_progress\":false,\"sync_in_progress\":false,\"progress_state\":{\"in_progress\":false},\"repository_root\":\"/tmp/oak-capture/a\",\"web_url\":\"http://127.0.0.1:8765/acme/game\",\"review_url\":\"http://127.0.0.1:8765/acme/game/branches/feature-x\"}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "feature-x",
+          "description": "first line\n\nsecond line\n\nfrom stdin\n"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "diff/diff_dirty",
+      "request": {
+        "args": {
+          "action": "diff",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"kind\":\"working_tree_diff\",\"diff_mode\":\"working_tree\",\"branch\":\"feature-x\",\"against\":\"HEAD\",\"branch_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"parent\":null,\"changed_file_count\":4,\"changed_files\":[{\"path\":\"Assets/Art/villain.png\",\"status\":\"renamed\",\"old_path\":\"Assets/Art/hero.png\",\"patch\":\"diff --oak a/Assets/Art/villain.png b/Assets/Art/villain.png\\nrename from Assets/Art/hero.png\\nrename to Assets/Art/villain.png\\n\"},{\"path\":\"a.txt\",\"status\":\"modified\",\"additions\":1,\"patch\":\"diff --oak a/a.txt b/a.txt\\n--- a/a.txt\\n+++ b/a.txt\\n@@ -1,3 +1,4 @@\\n one\\n two\\n three\\n+four\\n\"},{\"path\":\"b.uasset\",\"status\":\"deleted\",\"deletions\":1,\"patch\":\"diff --oak a/b.uasset b/b.uasset\\ndeleted file mode 100644\\nBinary files a/b.uasset and b/b.uasset differ\\n\"},{\"path\":\"new.txt\",\"status\":\"added\",\"additions\":1,\"patch\":\"diff --oak a/new.txt b/new.txt\\nnew file mode 100644\\n--- /dev/null\\n+++ b/new.txt\\n@@ -0,0 +1,1 @@\\n+new\\n\"}],\"merge_lineage_evidence\":{\"branch_parent\":null,\"branch_own_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"branch_effective_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"against_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"comparison_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"comparison_source\":\"working_tree_vs_head\",\"fork_point\":null,\"branch_commit_count\":0,\"caveats\":[]},\"caveats\":[\"Working-tree diff was computed from local filesystem state only.\"],\"recommended_next_commands\":[\"oak diff --print\",\"oak commit\"]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "changed_file_count": 4,
+          "files": [
+            {
+              "additions": 0,
+              "binary": false,
+              "deletions": 0,
+              "hunks": [],
+              "old_path": "Assets/Art/hero.png",
+              "patch_omitted": false,
+              "patch_omitted_reason": null,
+              "path": "Assets/Art/villain.png",
+              "status": "renamed"
+            },
+            {
+              "additions": 1,
+              "binary": false,
+              "deletions": 0,
+              "hunks": [
+                {
+                  "header": "@@ -1,3 +1,4 @@",
+                  "lines": [
+                    {
+                      "kind": "context",
+                      "new_line": 1,
+                      "old_line": 1,
+                      "text": "one"
+                    },
+                    {
+                      "kind": "context",
+                      "new_line": 2,
+                      "old_line": 2,
+                      "text": "two"
+                    },
+                    {
+                      "kind": "context",
+                      "new_line": 3,
+                      "old_line": 3,
+                      "text": "three"
+                    },
+                    {
+                      "kind": "added",
+                      "new_line": 4,
+                      "old_line": null,
+                      "text": "four"
+                    }
+                  ],
+                  "new_count": 4,
+                  "new_start": 1,
+                  "old_count": 3,
+                  "old_start": 1
+                }
+              ],
+              "old_path": null,
+              "patch_omitted": false,
+              "patch_omitted_reason": null,
+              "path": "a.txt",
+              "status": "modified"
+            },
+            {
+              "additions": 0,
+              "binary": true,
+              "deletions": 1,
+              "hunks": [],
+              "old_path": null,
+              "patch_omitted": false,
+              "patch_omitted_reason": null,
+              "path": "b.uasset",
+              "status": "deleted"
+            },
+            {
+              "additions": 1,
+              "binary": false,
+              "deletions": 0,
+              "hunks": [
+                {
+                  "header": "@@ -0,0 +1,1 @@",
+                  "lines": [
+                    {
+                      "kind": "added",
+                      "new_line": 1,
+                      "old_line": null,
+                      "text": "new"
+                    }
+                  ],
+                  "new_count": 1,
+                  "new_start": 1,
+                  "old_count": 0,
+                  "old_start": 0
+                }
+              ],
+              "old_path": null,
+              "patch_omitted": false,
+              "patch_omitted_reason": null,
+              "path": "new.txt",
+              "status": "added"
+            }
+          ],
+          "next_offset": null,
+          "truncated": false
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "diff/diff_path",
+      "request": {
+        "args": {
+          "action": "diff",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"kind\":\"working_tree_diff\",\"diff_mode\":\"working_tree\",\"branch\":\"feature-x\",\"against\":\"HEAD\",\"branch_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"parent\":null,\"changed_file_count\":1,\"changed_files\":[{\"path\":\"a.txt\",\"status\":\"modified\",\"additions\":1,\"patch\":\"diff --oak a/a.txt b/a.txt\\n--- a/a.txt\\n+++ b/a.txt\\n@@ -1,3 +1,4 @@\\n one\\n two\\n three\\n+four\\n\"}],\"merge_lineage_evidence\":{\"branch_parent\":null,\"branch_own_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"branch_effective_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"against_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"comparison_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"comparison_source\":\"working_tree_vs_head\",\"fork_point\":null,\"branch_commit_count\":0,\"caveats\":[]},\"caveats\":[\"Working-tree diff was computed from local filesystem state only.\"],\"recommended_next_commands\":[\"oak diff --print\",\"oak commit\"]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "changed_file_count": 1,
+          "files": [
+            {
+              "additions": 1,
+              "binary": false,
+              "deletions": 0,
+              "hunks": [
+                {
+                  "header": "@@ -1,3 +1,4 @@",
+                  "lines": [
+                    {
+                      "kind": "context",
+                      "new_line": 1,
+                      "old_line": 1,
+                      "text": "one"
+                    },
+                    {
+                      "kind": "context",
+                      "new_line": 2,
+                      "old_line": 2,
+                      "text": "two"
+                    },
+                    {
+                      "kind": "context",
+                      "new_line": 3,
+                      "old_line": 3,
+                      "text": "three"
+                    },
+                    {
+                      "kind": "added",
+                      "new_line": 4,
+                      "old_line": null,
+                      "text": "four"
+                    }
+                  ],
+                  "new_count": 4,
+                  "new_start": 1,
+                  "old_count": 3,
+                  "old_start": 1
+                }
+              ],
+              "old_path": null,
+              "patch_omitted": false,
+              "patch_omitted_reason": null,
+              "path": "a.txt",
+              "status": "modified"
+            }
+          ],
+          "next_offset": null,
+          "truncated": false
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "diff/diff_max",
+      "request": {
+        "args": {
+          "action": "diff",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"kind\":\"working_tree_diff\",\"diff_mode\":\"working_tree\",\"branch\":\"feature-x\",\"against\":\"HEAD\",\"branch_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"parent\":null,\"changed_file_count\":4,\"changed_files\":[{\"path\":\"Assets/Art/villain.png\",\"status\":\"renamed\",\"old_path\":\"Assets/Art/hero.png\",\"patch_omitted\":true,\"patch_omitted_reason\":\"byte_budget\"},{\"path\":\"a.txt\",\"status\":\"modified\",\"additions\":1,\"patch_omitted\":true,\"patch_omitted_reason\":\"byte_budget\"},{\"path\":\"b.uasset\",\"status\":\"deleted\",\"deletions\":1,\"patch_omitted\":true,\"patch_omitted_reason\":\"byte_budget\"},{\"path\":\"new.txt\",\"status\":\"added\",\"additions\":1,\"patch_omitted\":true,\"patch_omitted_reason\":\"byte_budget\"}],\"hunks_truncated\":true,\"merge_lineage_evidence\":{\"branch_parent\":null,\"branch_own_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"branch_effective_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"against_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"comparison_head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"comparison_source\":\"working_tree_vs_head\",\"fork_point\":null,\"branch_commit_count\":0,\"caveats\":[]},\"caveats\":[\"Working-tree diff was computed from local filesystem state only.\"],\"recommended_next_commands\":[\"oak diff --json --hunks -- Assets/Art/villain.png\",\"oak diff --json --hunks -- a.txt\",\"oak diff --json --hunks -- b.uasset\",\"oak diff --json --hunks -- new.txt\",\"oak diff --print\",\"oak commit\"]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "changed_file_count": 4,
+          "files": [
+            {
+              "additions": 0,
+              "binary": false,
+              "deletions": 0,
+              "hunks": [],
+              "old_path": "Assets/Art/hero.png",
+              "patch_omitted": true,
+              "patch_omitted_reason": "byte_budget",
+              "path": "Assets/Art/villain.png",
+              "status": "renamed"
+            },
+            {
+              "additions": 1,
+              "binary": false,
+              "deletions": 0,
+              "hunks": [],
+              "old_path": null,
+              "patch_omitted": true,
+              "patch_omitted_reason": "byte_budget",
+              "path": "a.txt",
+              "status": "modified"
+            },
+            {
+              "additions": 0,
+              "binary": false,
+              "deletions": 1,
+              "hunks": [],
+              "old_path": null,
+              "patch_omitted": true,
+              "patch_omitted_reason": "byte_budget",
+              "path": "b.uasset",
+              "status": "deleted"
+            },
+            {
+              "additions": 1,
+              "binary": false,
+              "deletions": 0,
+              "hunks": [],
+              "old_path": null,
+              "patch_omitted": true,
+              "patch_omitted_reason": "byte_budget",
+              "path": "new.txt",
+              "status": "added"
+            }
+          ],
+          "next_offset": null,
+          "truncated": true
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "diff/diff_commits",
+      "request": {
+        "args": {
+          "action": "diff",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"kind\":\"endpoint_diff\",\"diff_mode\":\"tree\",\"evidence_kind\":\"snapshot\",\"branch\":\"f970e15887cd\",\"against\":\"5c59bcbcf62b\",\"branch_head\":null,\"parent\":null,\"changed_file_count\":1,\"changed_files\":[{\"path\":\"a.txt\",\"status\":\"modified\",\"additions\":1,\"patch\":\"diff --oak a/a.txt b/a.txt\\n--- a/a.txt\\n+++ b/a.txt\\n@@ -1,3 +1,4 @@\\n one\\n two\\n three\\n+four\\n\",\"basis\":\"snapshot_difference\"}],\"caveats\":[\"No remote fetch was performed; local branch state may be behind.\"],\"recommended_next_commands\":[\"oak diff 5c59bcbcf62b f970e15887cd --print\",\"oak diff 5c59bcbcf62b f970e15887cd --stat\"]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "changed_file_count": 1,
+          "files": [
+            {
+              "additions": 1,
+              "binary": false,
+              "deletions": 0,
+              "hunks": [
+                {
+                  "header": "@@ -1,3 +1,4 @@",
+                  "lines": [
+                    {
+                      "kind": "context",
+                      "new_line": 1,
+                      "old_line": 1,
+                      "text": "one"
+                    },
+                    {
+                      "kind": "context",
+                      "new_line": 2,
+                      "old_line": 2,
+                      "text": "two"
+                    },
+                    {
+                      "kind": "context",
+                      "new_line": 3,
+                      "old_line": 3,
+                      "text": "three"
+                    },
+                    {
+                      "kind": "added",
+                      "new_line": 4,
+                      "old_line": null,
+                      "text": "four"
+                    }
+                  ],
+                  "new_count": 4,
+                  "new_start": 1,
+                  "old_count": 3,
+                  "old_start": 1
+                }
+              ],
+              "old_path": null,
+              "patch_omitted": false,
+              "patch_omitted_reason": null,
+              "path": "a.txt",
+              "status": "modified"
+            }
+          ],
+          "next_offset": null,
+          "truncated": false
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "log/log",
+      "request": {
+        "args": {
+          "action": "log",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "[{\"hash\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"timestamp\":\"2026-11-06T23:38:11.879828+00:00\",\"branch\":\"dev-f7a748\",\"description_or_subject\":\"4 files\",\"files_changed\":4}]\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "commits": [
+            {
+              "branch": "dev-f7a748",
+              "description": "4 files",
+              "files_changed": 4,
+              "hash": "5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1",
+              "timestamp": "2026-11-06T23:38:11.879828+00:00"
+            }
+          ]
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "branch_list/branch_list",
+      "request": {
+        "args": {
+          "action": "branch_list",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "[{\"schema_version\":1,\"name\":\"dev-f7a748\",\"head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"description\":null,\"status\":\"open\",\"created_at\":\"2026-11-06T23:38:11.850439+00:00\",\"current\":false},{\"schema_version\":1,\"name\":\"main\",\"head\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"description\":null,\"status\":\"open\",\"created_at\":\"2026-11-06T23:38:12.035463+00:00\",\"current\":false},{\"schema_version\":1,\"name\":\"feature-x\",\"head\":\"f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28\",\"description\":\"first line\\n\\nsecond line\\n\\nfrom stdin\\n\",\"status\":\"open\",\"created_at\":\"2026-11-06T23:38:12.036855+00:00\",\"current\":true}]\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branches": [
+            {
+              "created_at": "2026-11-06T23:38:11.850439+00:00",
+              "current": false,
+              "description": null,
+              "head": "5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1",
+              "name": "dev-f7a748",
+              "status": "open"
+            },
+            {
+              "created_at": "2026-11-06T23:38:12.035463+00:00",
+              "current": false,
+              "description": null,
+              "head": "5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1",
+              "name": "main",
+              "status": "open"
+            },
+            {
+              "created_at": "2026-11-06T23:38:12.036855+00:00",
+              "current": true,
+              "description": "first line\n\nsecond line\n\nfrom stdin\n",
+              "head": "f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28",
+              "name": "feature-x",
+              "status": "open"
+            }
+          ]
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "branch_create/branch_create",
+      "request": {
+        "args": {
+          "action": "branch_create",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "Updating 'main' from http://127.0.0.1:8765…\nCreated branch 'feature-x'\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "message": "Updating 'main' from http://127.0.0.1:8765…\nCreated branch 'feature-x'"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "branch_switch/switch_dirty",
+      "request": {
+        "args": {
+          "action": "branch_switch",
+          "exit_code": 4,
+          "stderr": "error: Working directory has uncommitted changes\n",
+          "stdout": ""
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "dirty_tree",
+          "conflict_paths": [],
+          "exit_code": 4,
+          "message": "Working directory has uncommitted changes",
+          "next_commands": [],
+          "oak_code": null,
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "branch_switch/branch_missing",
+      "request": {
+        "args": {
+          "action": "branch_switch",
+          "exit_code": 1,
+          "stderr": "error: Branch not found: 'no-such-branch' is not a branch or commit hash\n",
+          "stdout": "Fetching branch 'no-such-branch' from http://127.0.0.1:8765…\nAlready up to date\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "cli_failed",
+          "conflict_paths": [],
+          "exit_code": 1,
+          "message": "Branch not found: 'no-such-branch' is not a branch or commit hash",
+          "next_commands": [],
+          "oak_code": null,
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "branch_switch/branch_switch_main",
+      "request": {
+        "args": {
+          "action": "branch_switch",
+          "exit_code": 1,
+          "stderr": "error: IO error: `main` only exists on the server — work on a personal/feature branch and let the server squash-merge your branch description onto main\n",
+          "stdout": ""
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "cli_failed",
+          "conflict_paths": [],
+          "exit_code": 1,
+          "message": "IO error: `main` only exists on the server — work on a personal/feature branch and let the server squash-merge your branch description onto main",
+          "next_commands": [],
+          "oak_code": null,
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "branch_close/branch_close",
+      "request": {
+        "args": {
+          "action": "branch_close",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"branch\":\"mine\",\"close_reason\":null,\"current_branch\":\"mine\",\"recommended_next_commands\":[\"oak branch list --status closed --json\"],\"remote\":false,\"schema_version\":1,\"status\":\"closed\"}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "mine",
+          "current_branch": "mine",
+          "status": "closed"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "branch_close/branch_close_missing",
+      "request": {
+        "args": {
+          "action": "branch_close",
+          "exit_code": 1,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"error\":{\"code\":\"error\",\"message\":\"Branch not found: no-such-branch\",\"conflict_paths\":[],\"recommended_next_commands\":[]}}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "cli_failed",
+          "conflict_paths": [],
+          "exit_code": 1,
+          "message": "Branch not found: no-such-branch",
+          "next_commands": [],
+          "oak_code": "error",
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "commit/commit_first",
+      "request": {
+        "args": {
+          "action": "commit",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"committed\":true,\"pushed\":false,\"published\":false,\"remote_contacted\":false,\"branch\":\"dev-f7a748\",\"head_before\":null,\"head_after\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"change_counts\":{\"added\":4,\"modified\":0,\"deleted\":0,\"renamed\":0},\"paths_sample\":[\"Assets/Art/hero.png\",\"Assets/Art/hero.png.meta\",\"a.txt\",\"b.uasset\"],\"paths_sample_omitted\":0,\"unpushed_commit_count\":1,\"next_commands\":[\"oak push --repo <org>/<repo>\",\"oak finish --desc-file <file> --json\"]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "dev-f7a748",
+          "change_counts": {
+            "added": 4,
+            "deleted": 0,
+            "modified": 0,
+            "renamed": 0
+          },
+          "committed": true,
+          "head_after": "5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1",
+          "head_before": null,
+          "unpushed_commit_count": 1
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "commit/commit_branch",
+      "request": {
+        "args": {
+          "action": "commit",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"committed\":true,\"pushed\":false,\"published\":false,\"remote_contacted\":false,\"branch\":\"feature-x\",\"head_before\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"head_after\":\"f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28\",\"change_counts\":{\"added\":1,\"modified\":1,\"deleted\":1,\"renamed\":1},\"paths_sample\":[\"Assets/Art/villain.png\",\"a.txt\",\"b.uasset\",\"new.txt\"],\"paths_sample_omitted\":0,\"unpushed_commit_count\":1,\"next_commands\":[\"oak push\",\"oak finish --desc-file <file> --json\"]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "feature-x",
+          "change_counts": {
+            "added": 1,
+            "deleted": 1,
+            "modified": 1,
+            "renamed": 1
+          },
+          "committed": true,
+          "head_after": "f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28",
+          "head_before": "5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1",
+          "unpushed_commit_count": 1
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "commit/commit_nothing",
+      "request": {
+        "args": {
+          "action": "commit",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"committed\":false,\"pushed\":false,\"published\":false,\"remote_contacted\":false,\"branch\":\"feature-x\",\"head_before\":\"f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28\",\"head_after\":\"f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28\",\"change_counts\":{\"added\":0,\"modified\":0,\"deleted\":0,\"renamed\":0},\"paths_sample\":[],\"paths_sample_omitted\":0,\"unpushed_commit_count\":1,\"next_commands\":[\"oak push\",\"oak finish --desc-file <file> --json\"]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "feature-x",
+          "change_counts": {
+            "added": 0,
+            "deleted": 0,
+            "modified": 0,
+            "renamed": 0
+          },
+          "committed": false,
+          "head_after": "f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28",
+          "head_before": "f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28",
+          "unpushed_commit_count": 1
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "desc_append/desc_append",
+      "request": {
+        "args": {
+          "action": "desc_append",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"branch\":\"feature-x\",\"description\":\"first line\\n\\nsecond line\",\"local_saved\":true,\"remote_synced\":true,\"remote_state\":\"synced\",\"recommended_next_commands\":[\"oak branch show --remote --json -- feature-x\"],\"append\":{\"base\":\"remote_match\",\"previous_description\":\"first line\",\"appended\":\"second line\"}}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "feature-x",
+          "description": "first line\n\nsecond line",
+          "local_saved": true,
+          "remote_state": "synced",
+          "remote_synced": true
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "desc_append/desc_append_stdin",
+      "request": {
+        "args": {
+          "action": "desc_append",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"branch\":\"feature-x\",\"description\":\"first line\\n\\nsecond line\\n\\nfrom stdin\\n\",\"local_saved\":true,\"remote_synced\":true,\"remote_state\":\"synced\",\"recommended_next_commands\":[\"oak branch show --remote --json -- feature-x\"],\"append\":{\"base\":\"remote_match\",\"previous_description\":\"first line\\n\\nsecond line\",\"appended\":\"from stdin\\n\"}}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "feature-x",
+          "description": "first line\n\nsecond line\n\nfrom stdin\n",
+          "local_saved": true,
+          "remote_state": "synced",
+          "remote_synced": true
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "fetch/fetch",
+      "request": {
+        "args": {
+          "action": "fetch",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "Updating 'main' from http://127.0.0.1:8765…\nAlready up to date\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "message": "Updating 'main' from http://127.0.0.1:8765…\nAlready up to date"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "fetch/fetch_offline",
+      "request": {
+        "args": {
+          "action": "fetch",
+          "exit_code": 6,
+          "stderr": "error: HTTP error: error sending request for url (http://127.0.0.1:8765/api/acme/game)\n",
+          "stdout": "Updating 'main' from http://127.0.0.1:8765…\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "network",
+          "conflict_paths": [],
+          "exit_code": 6,
+          "message": "HTTP error: error sending request for url (http://127.0.0.1:8765/api/acme/game)",
+          "next_commands": [],
+          "oak_code": null,
+          "retryable": true
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "pull/pull_uptodate",
+      "request": {
+        "args": {
+          "action": "pull",
+          "exit_code": 0,
+          "stderr": "Already up to date\nUpdating 'main' from http://127.0.0.1:8765…\nAlready up to date with parent.\n",
+          "stdout": "{\"schema_version\":1,\"remote\":\"http://127.0.0.1:8765\",\"repo\":\"acme/game\",\"branch\":\"feature-x\",\"branch_after\":\"feature-x\",\"head_before\":\"f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28\",\"head_after\":\"f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28\",\"parent\":\"main\",\"parent_head_before\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"parent_head_after\":\"5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1\",\"commits_fetched\":0,\"branch_update\":\"up_to_date\",\"parent_synced\":true,\"parent_sync\":\"up_to_date\",\"convergence\":\"up_to_date\",\"description\":\"unchanged\",\"description_refreshed\":false,\"description_retained_local\":false,\"description_pending\":false,\"recommended_next_commands\":[\"oak status --json\"]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "feature-x",
+          "branch_after": "feature-x",
+          "commits_fetched": 0,
+          "conflict_paths": [],
+          "convergence": "up_to_date",
+          "head_after": "f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28",
+          "head_before": "f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28",
+          "parent_head_after": "5c59bcbcf62bbc00a13b801f21423b0bdb7a90800737986cd7fc2ae324b67ef1",
+          "parent_sync": "up_to_date",
+          "parent_synced": true
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "pull/pull_main",
+      "request": {
+        "args": {
+          "action": "pull",
+          "exit_code": 0,
+          "stderr": "Already up to date\nUpdating 'main' from http://127.0.0.1:8765…\nAlready up to date with parent.\n",
+          "stdout": "{\"schema_version\":1,\"remote\":\"http://127.0.0.1:8765\",\"repo\":\"acme/game\",\"branch\":\"dev-643833\",\"branch_after\":\"dev-643833\",\"head_before\":\"90b33f32dd21cb823868a1a322c024021ad36bc827a87f44f41c6c6ed8d1bd1c\",\"head_after\":\"90b33f32dd21cb823868a1a322c024021ad36bc827a87f44f41c6c6ed8d1bd1c\",\"parent\":\"main\",\"parent_head_before\":\"90b33f32dd21cb823868a1a322c024021ad36bc827a87f44f41c6c6ed8d1bd1c\",\"parent_head_after\":\"90b33f32dd21cb823868a1a322c024021ad36bc827a87f44f41c6c6ed8d1bd1c\",\"commits_fetched\":0,\"branch_update\":\"up_to_date\",\"parent_synced\":true,\"parent_sync\":\"up_to_date\",\"convergence\":\"up_to_date\",\"description\":\"unknown\",\"description_refreshed\":false,\"description_retained_local\":false,\"description_pending\":false,\"unknowns\":[\"description\"],\"recommended_next_commands\":[\"oak status --json\"]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "dev-643833",
+          "branch_after": "dev-643833",
+          "commits_fetched": 0,
+          "conflict_paths": [],
+          "convergence": "up_to_date",
+          "head_after": "90b33f32dd21cb823868a1a322c024021ad36bc827a87f44f41c6c6ed8d1bd1c",
+          "head_before": "90b33f32dd21cb823868a1a322c024021ad36bc827a87f44f41c6c6ed8d1bd1c",
+          "parent_head_after": "90b33f32dd21cb823868a1a322c024021ad36bc827a87f44f41c6c6ed8d1bd1c",
+          "parent_sync": "up_to_date",
+          "parent_synced": true
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "pull/pull_conflict",
+      "request": {
+        "args": {
+          "action": "pull",
+          "exit_code": 5,
+          "stderr": "Already up to date\nUpdating 'main' from http://127.0.0.1:8765…\n  downloaded 1 new file(s)\n  linked 1 ancestor commit(s) of 'main'\nwarning: Sync conflict: 1 file(s) need manual resolution\n  CONFLICT (content): a.txt\n\nFix the conflicts and then run 'oak pull --continue'\nTo abort the sync, run 'oak pull --abort'\nerror: Merge conflict: 1 file(s) modified on both branches since fork\n",
+          "stdout": "{\"schema_version\":1,\"remote\":\"http://127.0.0.1:8765\",\"repo\":\"acme/game\",\"branch\":\"mine\",\"branch_after\":\"mine\",\"head_before\":\"439c8ea7d8d9daed50d2f7a5e17efc12a9f573c678dca14740da5eb7ed8bdf57\",\"head_after\":\"439c8ea7d8d9daed50d2f7a5e17efc12a9f573c678dca14740da5eb7ed8bdf57\",\"parent\":\"main\",\"parent_head_before\":\"90b33f32dd21cb823868a1a322c024021ad36bc827a87f44f41c6c6ed8d1bd1c\",\"parent_head_after\":\"f0886d47c060dec50b1979e73534b8d3e353f3f8e319fba42a11ba02d8b7f2db\",\"commits_fetched\":0,\"branch_update\":\"up_to_date\",\"parent_synced\":false,\"parent_sync\":\"conflict\",\"convergence\":\"conflict\",\"description\":\"unchanged\",\"description_refreshed\":false,\"description_retained_local\":false,\"description_pending\":false,\"conflict_paths\":[\"a.txt\"],\"conflict_count\":1,\"recommended_next_commands\":[\"oak conflict status --json\",\"oak pull --continue\",\"oak pull --abort\"]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "conflict",
+          "conflict_paths": [
+            "a.txt"
+          ],
+          "exit_code": 5,
+          "message": "Merge conflict: 1 file(s) modified on both branches since fork",
+          "next_commands": [
+            "oak conflict status --json",
+            "oak pull --continue",
+            "oak pull --abort"
+          ],
+          "oak_code": null,
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "pull/pull_offline",
+      "request": {
+        "args": {
+          "action": "pull",
+          "exit_code": 6,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"error\":{\"code\":\"remote_error\",\"message\":\"HTTP error: error sending request for url (http://127.0.0.1:8765/api/acme/game/pull?since=439c8ea7d8d9daed50d2f7a5e17efc12a9f573c678dca14740da5eb7ed8bdf57&branch_name=mine&known_loss_protocol=report_v1&tags=v1)\",\"conflict_paths\":[],\"recommended_next_commands\":[\"oak status --json\"]}}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "network",
+          "conflict_paths": [],
+          "exit_code": 6,
+          "message": "HTTP error: error sending request for url (http://127.0.0.1:8765/api/acme/game/pull?since=439c8ea7d8d9daed50d2f7a5e17efc12a9f573c678dca14740da5eb7ed8bdf57&branch_name=mine&known_loss_protocol=report_v1&tags=v1)",
+          "next_commands": [
+            "oak status --json"
+          ],
+          "oak_code": "remote_error",
+          "retryable": true
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "pull/pull_abort",
+      "request": {
+        "args": {
+          "action": "pull",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "✓ Sync aborted, working directory restored\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "message": "✓ Sync aborted, working directory restored"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "push/push_branch",
+      "request": {
+        "args": {
+          "action": "push",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"pushed\":true,\"published\":true,\"remote_contacted\":true,\"remote\":\"http://127.0.0.1:8765\",\"repo\":\"acme/game\",\"branch\":\"feature-x\",\"pushed_head\":\"f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28\",\"current_branch_pushed_head\":\"f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28\",\"current_branch_push_checked\":true,\"review_url\":\"http://127.0.0.1:8765/acme/game/branches/feature-x\",\"recommended_next_commands\":[\"oak ci status --json\",\"oak branch review feature-x --remote --merge-preview --json\"]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "feature-x",
+          "published": true,
+          "pushed": true,
+          "pushed_head": "f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28",
+          "review_url": "http://127.0.0.1:8765/acme/game/branches/feature-x"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "push/push_not_linked",
+      "request": {
+        "args": {
+          "action": "push",
+          "exit_code": 1,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"error\":{\"code\":\"configuration_error\",\"message\":\"Configuration error: This repository isn't linked to a remote, and there's no terminal for the interactive org picker. Re-run with `oak push --repo <org>/<repo>` (or set OAK_REPO=<org>/<repo>), where <org> is an existing organization slug on https://oak.space. Create the org first on https://oak.space if you don't have one yet.\",\"conflict_paths\":[],\"recommended_next_commands\":[\"oak push --repo <org>/<repo>\",\"oak info --json\"]}}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "cli_failed",
+          "conflict_paths": [],
+          "exit_code": 1,
+          "message": "Configuration error: This repository isn't linked to a remote, and there's no terminal for the interactive org picker. Re-run with `oak push --repo <org>/<repo>` (or set OAK_REPO=<org>/<repo>), where <org> is an existing organization slug on https://oak.space. Create the org first on https://oak.space if you don't have one yet.",
+          "next_commands": [
+            "oak push --repo <org>/<repo>",
+            "oak info --json"
+          ],
+          "oak_code": "configuration_error",
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "push/push_offline",
+      "request": {
+        "args": {
+          "action": "push",
+          "exit_code": 6,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"error\":{\"code\":\"remote_error\",\"message\":\"HTTP error: error sending request for url (http://127.0.0.1:8765/api/acme/game)\",\"conflict_paths\":[],\"recommended_next_commands\":[\"oak status --json\"]}}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "network",
+          "conflict_paths": [],
+          "exit_code": 6,
+          "message": "HTTP error: error sending request for url (http://127.0.0.1:8765/api/acme/game)",
+          "next_commands": [
+            "oak status --json"
+          ],
+          "oak_code": "remote_error",
+          "retryable": true
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "merge/merge_ok",
+      "request": {
+        "args": {
+          "action": "merge",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"branch\":\"feature-x\",\"merged\":true,\"parent\":\"main\",\"new_branch\":\"dev-643833\",\"message\":\"first line\\n\\nsecond line\\n\\nfrom stdin\",\"commit_hash\":\"90b33f32dd21cb823868a1a322c024021ad36bc827a87f44f41c6c6ed8d1bd1c\",\"manifest_hash\":\"3427fb4e401dcab03c4543a5dcb9617f36a612339e852705bce86c6b114bca0d\",\"merge_parent_hash\":\"f970e15887cdafb1f1d0db1dc49159e6c80d2ba0479b007399f7fd004bd3be28\"}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "feature-x",
+          "commit_hash": "90b33f32dd21cb823868a1a322c024021ad36bc827a87f44f41c6c6ed8d1bd1c",
+          "merged": true,
+          "new_branch": "dev-643833",
+          "parent": "main"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "merge/merge_conflict",
+      "request": {
+        "args": {
+          "action": "merge",
+          "exit_code": 5,
+          "stderr": "warning: Merge conflict: 1 file(s) changed on both 'mine' and main\nRun 'oak pull' to merge main into this branch and resolve the conflicts,\nthen run 'oak merge' again.\n",
+          "stdout": "{\"schema_version\":1,\"error\":{\"code\":\"conflict_detected\",\"message\":\"Merge conflict: 1 file(s) modified on both branches since fork\",\"conflict_paths\":[],\"recommended_next_commands\":[\"oak conflict status --json\",\"oak conflict show --json\",\"oak pull --continue\",\"oak pull --abort\"]}}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "conflict",
+          "conflict_paths": [],
+          "exit_code": 5,
+          "message": "Merge conflict: 1 file(s) modified on both branches since fork",
+          "next_commands": [
+            "oak conflict status --json",
+            "oak conflict show --json",
+            "oak pull --continue",
+            "oak pull --abort"
+          ],
+          "oak_code": "conflict_detected",
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "restore/restore_clean",
+      "request": {
+        "args": {
+          "action": "restore",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "Specified paths are already at source state, nothing to restore\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "message": "Specified paths are already at source state, nothing to restore"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "restore/restore_dirty",
+      "request": {
+        "args": {
+          "action": "restore",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "The following changes will be discarded:\n\nTracked files:\n  revert:  a.txt\n\n✓ Restored 'a.txt'\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "message": "The following changes will be discarded:\n\nTracked files:\n  revert:  a.txt\n\n✓ Restored 'a.txt'"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "whoami/whoami",
+      "request": {
+        "args": {
+          "action": "whoami",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"remote\":\"http://127.0.0.1:8765\",\"remote_source\":\"repository\",\"credential\":{\"source\":\"none\",\"present\":false},\"identity\":{\"state\":\"authenticated\",\"http_status\":200,\"username\":\"oak-serve\",\"display_name\":\"oak serve (open, loopback only)\"},\"capabilities\":{\"feedback_admin\":\"absent_or_denied\",\"feedback_admin_http_status\":404}}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "display_name": "oak serve (open, loopback only)",
+          "logged_in": true,
+          "remote": "http://127.0.0.1:8765",
+          "username": "oak-serve"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "whoami/whoami_text",
+      "request": {
+        "args": {
+          "action": "whoami",
+          "exit_code": 6,
+          "stderr": "error: Server error: Not logged in to https://oak.space. Run `oak login` first.\n",
+          "stdout": ""
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "not_logged_in",
+          "conflict_paths": [],
+          "exit_code": 6,
+          "message": "Server error: Not logged in to https://oak.space. Run `oak login` first.",
+          "next_commands": [],
+          "oak_code": null,
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "ci_status/ci_status",
+      "request": {
+        "args": {
+          "action": "ci_status",
+          "exit_code": 1,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"branch\":\"mine\",\"commit\":\"439c8ea7d8d9daed50d2f7a5e17efc12a9f573c678dca14740da5eb7ed8bdf57\",\"state\":\"no_runs\",\"subject\":\"current_head\",\"checkout_branch\":\"mine\",\"checkout_head\":\"439c8ea7d8d9daed50d2f7a5e17efc12a9f573c678dca14740da5eb7ed8bdf57\",\"checkout_matches_observed\":true,\"recommended_next_commands\":[\"oak ci runs --json --limit 50\"]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "mine",
+          "checkout_matches_observed": true,
+          "commit": "439c8ea7d8d9daed50d2f7a5e17efc12a9f573c678dca14740da5eb7ed8bdf57",
+          "run": null,
+          "run_url": null,
+          "state": "no_runs"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "ci_runs/ci_runs",
+      "request": {
+        "args": {
+          "action": "ci_runs",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"runs\":[]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "runs": []
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "ci_logs/ci_logs",
+      "request": {
+        "args": {
+          "action": "ci_logs",
+          "exit_code": 6,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"error\":{\"code\":\"remote_error\",\"message\":\"Server error: CI run 1 not found — list recent runs with `oak ci runs`\",\"conflict_paths\":[],\"recommended_next_commands\":[\"oak status --json\"]}}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "network",
+          "conflict_paths": [],
+          "exit_code": 6,
+          "message": "Server error: CI run 1 not found — list recent runs with `oak ci runs`",
+          "next_commands": [
+            "oak status --json"
+          ],
+          "oak_code": "remote_error",
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "ci_publish_preview/ci_publish_preview",
+      "request": {
+        "args": {
+          "action": "ci_publish_preview",
+          "exit_code": 6,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"error\":{\"code\":\"remote_error\",\"message\":\"Server error: Release preview for environment 'production' failed: HTTP 404 Not Found (check the environment, --workflow, and --branch; a server without protected environments also answers 404)\",\"conflict_paths\":[],\"recommended_next_commands\":[\"oak status --json\"]}}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "network",
+          "conflict_paths": [],
+          "exit_code": 6,
+          "message": "Server error: Release preview for environment 'production' failed: HTTP 404 Not Found (check the environment, --workflow, and --branch; a server without protected environments also answers 404)",
+          "next_commands": [
+            "oak status --json"
+          ],
+          "oak_code": "remote_error",
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "conflict_status/conflict_status",
+      "request": {
+        "args": {
+          "action": "conflict_status",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"context\":\"checkout\",\"in_progress\":true,\"kind\":\"sync\",\"conflict_paths\":[\"a.txt\"],\"recommended_next_commands\":[\"oak pull --continue\",\"oak pull --abort\"],\"state\":{\"sync_head\":{\"parent_branch\":\"main\",\"branch\":\"mine\",\"parent_head\":\"f0886d47c060dec50b1979e73534b8d3e353f3f8e319fba42a11ba02d8b7f2db\",\"reseed_old_tip\":null},\"sync_state\":{\"merged_manifest_hash\":\"578f243c1edfde6560e591989473f61bf88bb9e3a65bb49688872c819752838c\"}}}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "conflict_paths": [
+            "a.txt"
+          ],
+          "in_progress": true,
+          "kind": "sync",
+          "recommended_next_commands": [
+            "oak pull --continue",
+            "oak pull --abort"
+          ]
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "version/version",
+      "request": {
+        "args": {
+          "action": "version",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "oak 0.110.0 (nightly 20261106.274889b0)\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "build": "20261106.274889b0",
+          "channel": "nightly",
+          "version": "0.110.0"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "ci_status/real_ci_status",
+      "request": {
+        "args": {
+          "action": "ci_status",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"branch\":\"engine-crate\",\"commit\":\"0503df4e8eadc6cf9b9d80f235aaafe2dbf0a24c72c59d7dcac60861d7407cbe\",\"state\":\"success\",\"run\":{\"id\":2494,\"workflow_name\":\"ci\",\"workflow_path\":\".oak/workflows/ci.yml\",\"event\":\"branch.created\",\"branch\":\"engine-crate\",\"commit_hash\":\"0503df4e8eadc6cf9b9d80f235aaafe2dbf0a24c72c59d7dcac60861d7407cbe\",\"triggered_by\":\"zach\",\"backend\":\"runner\",\"status\":\"completed\",\"conclusion\":\"success\",\"queued_at\":\"2026-11-06T23:30:59.483352+00:00\",\"started_at\":\"2026-11-06T23:31:08.964040+00:00\",\"finished_at\":\"2026-11-06T23:34:10.731124+00:00\"},\"run_url\":\"https://oak.space/oak/oak/ci/runs/2494\",\"subject\":\"current_head\",\"checkout_branch\":\"engine-crate\",\"checkout_head\":\"0503df4e8eadc6cf9b9d80f235aaafe2dbf0a24c72c59d7dcac60861d7407cbe\",\"checkout_matches_observed\":true,\"recommended_next_commands\":[\"oak merge\"]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "engine-crate",
+          "checkout_matches_observed": true,
+          "commit": "0503df4e8eadc6cf9b9d80f235aaafe2dbf0a24c72c59d7dcac60861d7407cbe",
+          "run": {
+            "backend": "runner",
+            "branch": "engine-crate",
+            "commit_hash": "0503df4e8eadc6cf9b9d80f235aaafe2dbf0a24c72c59d7dcac60861d7407cbe",
+            "conclusion": "success",
+            "event": "branch.created",
+            "finished_at": "2026-11-06T23:34:10.731124+00:00",
+            "id": 2494,
+            "queued_at": "2026-11-06T23:30:59.483352+00:00",
+            "started_at": "2026-11-06T23:31:08.964040+00:00",
+            "status": "completed",
+            "triggered_by": "zach",
+            "workflow_name": "ci",
+            "workflow_path": ".oak/workflows/ci.yml"
+          },
+          "run_url": "https://oak.space/oak/oak/ci/runs/2494",
+          "state": "success"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "ci_runs/real_ci_runs",
+      "request": {
+        "args": {
+          "action": "ci_runs",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\": 1, \"runs\": [{\"id\": 2491, \"workflow_name\": \"nightly\", \"workflow_path\": \".oak/workflows/nightly.yml\", \"event\": \"manual\", \"branch\": \"main\", \"commit_hash\": \"7b620f903adc75fb7260ff85f86c686f413ba5f4bcb4101bc9953c1d204577f2\", \"triggered_by\": \"zach\", \"backend\": \"runner\", \"status\": \"completed\", \"conclusion\": \"success\", \"queued_at\": \"2026-11-06T23:15:04.193803+00:00\", \"started_at\": \"2026-11-06T23:15:08.932017+00:00\", \"finished_at\": \"2026-11-06T23:24:08.101573+00:00\", \"run_url\": \"https://oak.space/oak/oak/ci/runs/2491\"}, {\"id\": 2490, \"workflow_name\": \"ci\", \"workflow_path\": \".oak/workflows/ci.yml\", \"event\": \"merge\", \"branch\": \"main\", \"commit_hash\": \"7b620f903adc75fb7260ff85f86c686f413ba5f4bcb4101bc9953c1d204577f2\", \"triggered_by\": \"zach\", \"backend\": \"runner\", \"status\": \"completed\", \"conclusion\": \"success\", \"queued_at\": \"2026-11-06T23:14:55.267291+00:00\", \"started_at\": \"2026-11-06T23:14:59.525695+00:00\", \"finished_at\": \"2026-11-06T23:17:41.840939+00:00\", \"run_url\": \"https://oak.space/oak/oak/ci/runs/2490\"}]}"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "runs": [
+            {
+              "backend": "runner",
+              "branch": "main",
+              "commit_hash": "7b620f903adc75fb7260ff85f86c686f413ba5f4bcb4101bc9953c1d204577f2",
+              "conclusion": "success",
+              "event": "manual",
+              "finished_at": "2026-11-06T23:24:08.101573+00:00",
+              "id": 2491,
+              "queued_at": "2026-11-06T23:15:04.193803+00:00",
+              "run_url": "https://oak.space/oak/oak/ci/runs/2491",
+              "started_at": "2026-11-06T23:15:08.932017+00:00",
+              "status": "completed",
+              "triggered_by": "zach",
+              "workflow_name": "nightly",
+              "workflow_path": ".oak/workflows/nightly.yml"
+            },
+            {
+              "backend": "runner",
+              "branch": "main",
+              "commit_hash": "7b620f903adc75fb7260ff85f86c686f413ba5f4bcb4101bc9953c1d204577f2",
+              "conclusion": "success",
+              "event": "merge",
+              "finished_at": "2026-11-06T23:17:41.840939+00:00",
+              "id": 2490,
+              "queued_at": "2026-11-06T23:14:55.267291+00:00",
+              "run_url": "https://oak.space/oak/oak/ci/runs/2490",
+              "started_at": "2026-11-06T23:14:59.525695+00:00",
+              "status": "completed",
+              "triggered_by": "zach",
+              "workflow_name": "ci",
+              "workflow_path": ".oak/workflows/ci.yml"
+            }
+          ]
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "ci_logs/real_ci_logs",
+      "request": {
+        "args": {
+          "action": "ci_logs",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"run\":{\"id\":2494,\"workflow_name\":\"ci\",\"workflow_path\":\".oak/workflows/ci.yml\",\"event\":\"branch.created\",\"branch\":\"engine-crate\",\"commit_hash\":\"0503df4e8eadc6cf9b9d80f235aaafe2dbf0a24c72c59d7dcac60861d7407cbe\",\"triggered_by\":\"zach\",\"backend\":\"runner\",\"status\":\"completed\",\"conclusion\":\"success\",\"queued_at\":\"2026-11-06T23:30:59.483352+00:00\",\"started_at\":\"2026-11-06T23:31:08.964040+00:00\",\"finished_at\":\"2026-11-06T23:34:10.731124+00:00\",\"jobs\":[{\"id\":2607,\"name\":\"check\",\"status\":\"completed\",\"conclusion\":\"success\",\"steps\":[{\"id\":21934,\"name\":\"Run actions/checkout@v4\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"id\":21935,\"name\":\"Run actions/cache@v4\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"id\":21936,\"name\":\"disk before build\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"id\":21937,\"name\":\"install rust\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"id\":21938,\"name\":\"fmt\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"id\":21939,\"name\":\"clippy\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"id\":21940,\"name\":\"install nextest\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"id\":21941,\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"id\":21942,\"name\":\"doctests\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"id\":21943,\"name\":\"engine stays pure\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"id\":21944,\"name\":\"install cargo-llvm-cov\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"id\":21945,\"name\":\"engine coverage\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"id\":21946,\"name\":\"disk after build\",\"status\":\"completed\",\"conclusion\":\"success\"}]}]},\"run_url\":\"https://oak.space/oak/oak/ci/runs/2494\",\"projection\":\"summary\",\"logs_truncated\":false,\"log_bytes_returned\":0}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "log_bytes_returned": 0,
+          "logs_truncated": false,
+          "projection": "summary",
+          "run": {
+            "backend": "runner",
+            "branch": "engine-crate",
+            "commit_hash": "0503df4e8eadc6cf9b9d80f235aaafe2dbf0a24c72c59d7dcac60861d7407cbe",
+            "conclusion": "success",
+            "event": "branch.created",
+            "finished_at": "2026-11-06T23:34:10.731124+00:00",
+            "id": 2494,
+            "jobs": [
+              {
+                "conclusion": "success",
+                "id": 2607,
+                "name": "check",
+                "status": "completed",
+                "steps": [
+                  {
+                    "conclusion": "success",
+                    "id": 21934,
+                    "name": "Run actions/checkout@v4",
+                    "status": "completed"
+                  },
+                  {
+                    "conclusion": "success",
+                    "id": 21935,
+                    "name": "Run actions/cache@v4",
+                    "status": "completed"
+                  },
+                  {
+                    "conclusion": "success",
+                    "id": 21936,
+                    "name": "disk before build",
+                    "status": "completed"
+                  },
+                  {
+                    "conclusion": "success",
+                    "id": 21937,
+                    "name": "install rust",
+                    "status": "completed"
+                  },
+                  {
+                    "conclusion": "success",
+                    "id": 21938,
+                    "name": "fmt",
+                    "status": "completed"
+                  },
+                  {
+                    "conclusion": "success",
+                    "id": 21939,
+                    "name": "clippy",
+                    "status": "completed"
+                  },
+                  {
+                    "conclusion": "success",
+                    "id": 21940,
+                    "name": "install nextest",
+                    "status": "completed"
+                  },
+                  {
+                    "conclusion": "success",
+                    "id": 21941,
+                    "name": "test",
+                    "status": "completed"
+                  },
+                  {
+                    "conclusion": "success",
+                    "id": 21942,
+                    "name": "doctests",
+                    "status": "completed"
+                  },
+                  {
+                    "conclusion": "success",
+                    "id": 21943,
+                    "name": "engine stays pure",
+                    "status": "completed"
+                  },
+                  {
+                    "conclusion": "success",
+                    "id": 21944,
+                    "name": "install cargo-llvm-cov",
+                    "status": "completed"
+                  },
+                  {
+                    "conclusion": "success",
+                    "id": 21945,
+                    "name": "engine coverage",
+                    "status": "completed"
+                  },
+                  {
+                    "conclusion": "success",
+                    "id": 21946,
+                    "name": "disk after build",
+                    "status": "completed"
+                  }
+                ]
+              }
+            ],
+            "queued_at": "2026-11-06T23:30:59.483352+00:00",
+            "started_at": "2026-11-06T23:31:08.964040+00:00",
+            "status": "completed",
+            "triggered_by": "zach",
+            "workflow_name": "ci",
+            "workflow_path": ".oak/workflows/ci.yml"
+          },
+          "run_url": "https://oak.space/oak/oak/ci/runs/2494",
+          "schema_version": 1
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "ci_publish_preview/real_ci_publish_preview",
+      "request": {
+        "args": {
+          "action": "ci_publish_preview",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"outcome\":\"dry_run\",\"preview\":{\"environment\":\"production\",\"branch\":\"main\",\"commit\":\"7b620f903adc75fb7260ff85f86c686f413ba5f4bcb4101bc9953c1d204577f2\",\"workflow\":\"release\",\"workflow_path\":\".oak/workflows/release.yml\",\"workflow_hash\":\"7d256236dfe3f9a2292e5e0dd59ee8251c5b2a466af7d6534f1cf3e1605bbfc4\",\"event\":\"manual\",\"policy_version\":51,\"required_reviewers\":true,\"reviewers\":[\"zach\"],\"runner_online\":true,\"can_authorize\":true,\"ready\":true,\"problems\":[],\"republish\":false,\"auto_publish\":false},\"recommended_next_commands\":[\"oak ci publish -e production --workflow .oak/workflows/release.yml --branch main --yes --json\"]}\n"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "main",
+          "can_authorize": true,
+          "commit": "7b620f903adc75fb7260ff85f86c686f413ba5f4bcb4101bc9953c1d204577f2",
+          "environment": "production",
+          "outcome": "dry_run",
+          "policy_version": 51,
+          "problems": [],
+          "ready": true,
+          "republish": false,
+          "required_reviewers": true,
+          "reviewers": [
+            "zach"
+          ],
+          "runner_online": true,
+          "workflow": "release",
+          "workflow_hash": "7d256236dfe3f9a2292e5e0dd59ee8251c5b2a466af7d6534f1cf3e1605bbfc4",
+          "workflow_path": ".oak/workflows/release.yml"
+        },
+        "v": 1
+      },
+      "source": "captured"
+    },
+    {
+      "name": "merge/merge_ci_gate",
+      "request": {
+        "args": {
+          "action": "merge",
+          "exit_code": 6,
+          "stderr": "error: Server error: Merge failed: HTTP 412 Precondition Failed\nCI gates this merge — check it with `oak ci status`, or run `oak merge --wait` to merge automatically when CI concludes.\n",
+          "stdout": ""
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "ci_blocked",
+          "conflict_paths": [],
+          "exit_code": 6,
+          "message": "Server error: Merge failed: HTTP 412 Precondition Failed\nCI gates this merge — check it with `oak ci status`, or run `oak merge --wait` to merge automatically when CI concludes.",
+          "next_commands": [],
+          "oak_code": null,
+          "retryable": true
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "derived"
+    },
+    {
+      "name": "status/repo_locked",
+      "request": {
+        "args": {
+          "action": "status",
+          "exit_code": 3,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"error\":{\"code\":\"repo_locked\",\"message\":\"Repository is locked\",\"conflict_paths\":[],\"recommended_next_commands\":[\"oak status --json\"]}}"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "locked",
+          "conflict_paths": [],
+          "exit_code": 3,
+          "message": "Repository is locked",
+          "next_commands": [
+            "oak status --json"
+          ],
+          "oak_code": "repo_locked",
+          "retryable": true
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "derived"
+    },
+    {
+      "name": "push/auth_required",
+      "request": {
+        "args": {
+          "action": "push",
+          "exit_code": 6,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"error\":{\"code\":\"auth_required\",\"message\":\"Authentication required\",\"conflict_paths\":[],\"recommended_next_commands\":[\"oak login --remote=https://oak.space\"]}}"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "not_logged_in",
+          "conflict_paths": [],
+          "exit_code": 6,
+          "message": "Authentication required",
+          "next_commands": [
+            "oak login --remote=https://oak.space"
+          ],
+          "oak_code": "auth_required",
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "derived"
+    },
+    {
+      "name": "desc_append/description_stale",
+      "request": {
+        "args": {
+          "action": "desc_append",
+          "exit_code": 5,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"error\":{\"code\":\"description_stale\",\"message\":\"Refusing to append\",\"conflict_paths\":[],\"recommended_next_commands\":[\"oak pull --branch-only --json\"]}}"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "conflict",
+          "conflict_paths": [],
+          "exit_code": 5,
+          "message": "Refusing to append",
+          "next_commands": [
+            "oak pull --branch-only --json"
+          ],
+          "oak_code": "description_stale",
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "derived"
+    },
+    {
+      "name": "ci_publish/publish_authorized",
+      "request": {
+        "args": {
+          "action": "ci_publish",
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"outcome\":\"authorized\",\"preview\":{\"environment\":\"production\",\"branch\":\"main\",\"commit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"workflow\":\"release\",\"ready\":true,\"can_authorize\":true,\"problems\":[]},\"authorization\":{\"authorization_id\":\"auth-1\",\"run_id\":42,\"run_url\":\"https://oak.space/oak/oak/ci/runs/42\"}}"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "branch": "main",
+          "can_authorize": true,
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "environment": "production",
+          "outcome": "authorized",
+          "policy_version": null,
+          "problems": [],
+          "ready": true,
+          "republish": false,
+          "required_reviewers": false,
+          "reviewers": [],
+          "run_id": 42,
+          "run_url": "https://oak.space/oak/oak/ci/runs/42",
+          "runner_online": false,
+          "workflow": "release",
+          "workflow_hash": null,
+          "workflow_path": null
+        },
+        "v": 1
+      },
+      "source": "derived"
+    },
+    {
+      "name": "ci_publish/publish_not_ready",
+      "request": {
+        "args": {
+          "action": "ci_publish",
+          "exit_code": 1,
+          "stderr": "",
+          "stdout": "{\"schema_version\":1,\"outcome\":\"not_ready\",\"preview\":{\"environment\":\"production\",\"ready\":false,\"problems\":[\"no runner online\"]}}"
+        },
+        "op": "cli.parse",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "ci_blocked",
+          "exit_code": 1,
+          "message": "oak ci publish: not_ready",
+          "outcome": "not_ready",
+          "problems": [
+            "no runner online"
+          ],
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "derived"
+    }
+  ],
+  "name": "cli_parse"
+}

@@ -1,0 +1,141 @@
+{
+  "meta": {
+    "oak_version": "oak 0.106.0",
+    "git_version": "git version 2.54.0 (Apple Git-157)",
+    "host": "Apple M5 Max",
+    "ncpu": 18,
+    "args": {
+      "oak": "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/oak-base",
+      "corpus": [
+        "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/corpus/vscode"
+      ],
+      "forge_corpus": null,
+      "out": "/private/tmp/claude-501/-Users-zdgeier--claude-spares-spare-AS9nte/5401d6fc-f046-44c9-8faa-909335bba8f8/scratchpad/results/forge-vs-base.json",
+      "lanes": "forge",
+      "runs": 10,
+      "duration": 20.0,
+      "warmup": 5.0,
+      "concurrency": "1,4",
+      "session_commits": 3,
+      "tools": "git,oak"
+    },
+    "started": "2026-10-29T05:19:04Z"
+  },
+  "local": {},
+  "forge": {
+    "corpus": "vscode",
+    "git": {
+      "seed_push_ms": 6985.5,
+      "full_clone_ms": 2689.6,
+      "branch": {
+        "1": {
+          "push": {
+            "ops": 80,
+            "ops_per_s": 4.0,
+            "p50_ms": 248.4,
+            "p95_ms": 263.1,
+            "p99_ms": 265.7
+          },
+          "errors": 0
+        },
+        "4": {
+          "push": {
+            "ops": 188,
+            "ops_per_s": 9.4,
+            "p50_ms": 421.5,
+            "p95_ms": 470.7,
+            "p99_ms": 628.1
+          },
+          "errors": 0
+        }
+      },
+      "clone": {
+        "1": {
+          "clone": {
+            "ops": 5,
+            "ops_per_s": 0.25,
+            "p50_ms": 2724.6,
+            "p95_ms": 2764.7,
+            "p99_ms": 2764.7
+          },
+          "errors": 0
+        },
+        "4": {
+          "clone": {
+            "ops": 12,
+            "ops_per_s": 0.6,
+            "p50_ms": 4178.4,
+            "p95_ms": 4241.7,
+            "p99_ms": 4241.7
+          },
+          "errors": 0
+        }
+      },
+      "session": {
+        "1": {
+          "clone": {
+            "ops": 4,
+            "ops_per_s": 0.2,
+            "p50_ms": 2651.1,
+            "p95_ms": 2651.1,
+            "p99_ms": 2651.1
+          },
+          "push": {
+            "ops": 12,
+            "ops_per_s": 0.6,
+            "p50_ms": 257.4,
+            "p95_ms": 771.2,
+            "p99_ms": 771.2
+          },
+          "errors": 0
+        },
+        "4": {
+          "push": {
+            "ops": 32,
+            "ops_per_s": 1.6,
+            "p50_ms": 418.4,
+            "p95_ms": 811.9,
+            "p99_ms": 819.8
+          },
+          "clone": {
+            "ops": 8,
+            "ops_per_s": 0.4,
+            "p50_ms": 4050.3,
+            "p95_ms": 4093.0,
+            "p99_ms": 4093.0
+          },
+          "errors": 2,
+          "first_error": "command failed (1): git add -A && git commit -qm wip && git push -q -f origin s-1-74\n\nTo git://127.0.0.1:64579/repo.git\n ! [remote rejected]   s-1-74 -> s-1-74 (unable to migrate objects to permanent storage)\nerror: failed to push some refs to 'git://127.0.0.1:64579/repo.git'\n"
+        }
+      }
+    },
+    "oak": {
+      "seed_push_ms": 14613.2,
+      "full_clone_ms": 147389.5,
+      "branch": {
+        "1": {
+          "errors": 0
+        },
+        "4": {
+          "errors": 0
+        }
+      },
+      "clone": {
+        "1": {
+          "errors": 0
+        },
+        "4": {
+          "errors": 0
+        }
+      },
+      "session": {
+        "1": {
+          "errors": 0
+        },
+        "4": {
+          "errors": 0
+        }
+      }
+    }
+  }
+}

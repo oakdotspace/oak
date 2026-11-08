@@ -1,0 +1,28 @@
+# The pure logic shared by the Godot, Unity and Unreal extensions, behind a
+# small JSON-over-C ABI. docs/engine-contract.md is the contract.
+#
+# Not published to crates.io: it ships as release assets
+# (oak-engine-<target>.{dylib,so,dll}, built by the Makefile's build-release-*
+# targets), and `oak-core` is a plain path dependency for that reason. It isn't
+# the workspace's `oak-core` entry because that one leaves default features on,
+# and a member can't turn them off through inheritance.
+[package]
+name = "oakvcs-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Pure logic and a C ABI for Oak's game-engine extensions."
+publish = false
+
+[lib]
+name = "oak_engine"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+oak-core = { package = "oakvcs-core", path = "../core", default-features = false }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+cbindgen = { version = "0.29", default-features = false }
+tempfile = { workspace = true }

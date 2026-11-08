@@ -1,0 +1,870 @@
+{
+  "cases": [
+    {
+      "name": "00-status",
+      "request": {
+        "args": {
+          "action": "status",
+          "params": {}
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "status",
+            "--json"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 30000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "01-info",
+      "request": {
+        "args": {
+          "action": "info",
+          "params": {}
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "info",
+            "--json"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 30000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "02-version",
+      "request": {
+        "args": {
+          "action": "version",
+          "params": {}
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "--version"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 30000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "03-conflict_status",
+      "request": {
+        "args": {
+          "action": "conflict_status",
+          "params": {}
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "conflict",
+            "status",
+            "--json"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 30000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "04-diff",
+      "request": {
+        "args": {
+          "action": "diff",
+          "params": {
+            "max_bytes": 65536,
+            "paths": [
+              "Assets/a.png"
+            ]
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "diff",
+            "--json",
+            "--hunks",
+            "--max-bytes",
+            "65536",
+            "--",
+            "Assets/a.png"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 30000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "05-diff",
+      "request": {
+        "args": {
+          "action": "diff",
+          "params": {
+            "from": "abc123",
+            "paths": [
+              "a.txt"
+            ],
+            "to": "def456"
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "diff",
+            "--json",
+            "--hunks",
+            "abc123",
+            "def456",
+            "--",
+            "a.txt"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 30000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "06-diff",
+      "request": {
+        "args": {
+          "action": "diff",
+          "params": {
+            "to": "def456"
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "bad_request",
+          "message": "`from` and `to` go together: oak can't diff a commit with no parent",
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "07-log",
+      "request": {
+        "args": {
+          "action": "log",
+          "params": {
+            "limit": 10
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "log",
+            "--json",
+            "-n",
+            "10"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 30000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "08-branch_list",
+      "request": {
+        "args": {
+          "action": "branch_list",
+          "params": {}
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "branch",
+            "list",
+            "--json"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 30000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "09-desc_get",
+      "request": {
+        "args": {
+          "action": "desc_get",
+          "params": {}
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "info",
+            "--json"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 30000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "10-branch_create",
+      "request": {
+        "args": {
+          "action": "branch_create",
+          "params": {
+            "name": "hero-pass"
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "switch",
+            "-c",
+            "hero-pass"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "11-branch_switch",
+      "request": {
+        "args": {
+          "action": "branch_switch",
+          "params": {
+            "name": "main"
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "switch",
+            "main"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "12-branch_close",
+      "request": {
+        "args": {
+          "action": "branch_close",
+          "params": {
+            "name": "hero-pass"
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "close",
+            "--json",
+            "hero-pass"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "13-commit",
+      "request": {
+        "args": {
+          "action": "commit",
+          "params": {
+            "paths": [
+              "a b.txt",
+              "--odd"
+            ]
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "commit",
+            "--json",
+            "--quiet",
+            "--",
+            "a b.txt",
+            "--odd"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "14-desc_append",
+      "request": {
+        "args": {
+          "action": "desc_append",
+          "params": {
+            "message": "second line"
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "desc",
+            "--append",
+            "--file",
+            "-",
+            "--json"
+          ],
+          "cwd_relative": ".",
+          "stdin": "second line",
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "15-fetch",
+      "request": {
+        "args": {
+          "action": "fetch",
+          "params": {}
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "fetch"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "16-pull",
+      "request": {
+        "args": {
+          "action": "pull",
+          "params": {}
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "pull",
+            "--json"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "17-pull",
+      "request": {
+        "args": {
+          "action": "pull",
+          "params": {
+            "continue": true
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "pull",
+            "--continue"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "18-push",
+      "request": {
+        "args": {
+          "action": "push",
+          "params": {}
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "push",
+            "--json"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "19-merge",
+      "request": {
+        "args": {
+          "action": "merge",
+          "params": {
+            "wait_minutes": 5
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "merge",
+            "--json",
+            "--wait=5"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 600000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "20-restore",
+      "request": {
+        "args": {
+          "action": "restore",
+          "params": {
+            "paths": [
+              "a.txt"
+            ]
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "restore",
+            "-f",
+            "--",
+            "a.txt"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "21-whoami",
+      "request": {
+        "args": {
+          "action": "whoami",
+          "params": {}
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "auth",
+            "status",
+            "--json"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "22-ci_status",
+      "request": {
+        "args": {
+          "action": "ci_status",
+          "params": {}
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "ci",
+            "status",
+            "--json"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "23-ci_runs",
+      "request": {
+        "args": {
+          "action": "ci_runs",
+          "params": {
+            "limit": 5
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "ci",
+            "runs",
+            "--json",
+            "--limit",
+            "5"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "24-ci_logs",
+      "request": {
+        "args": {
+          "action": "ci_logs",
+          "params": {
+            "run": 42,
+            "summary": true
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "ci",
+            "logs",
+            "42",
+            "--json",
+            "--summary"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "25-ci_publish_preview",
+      "request": {
+        "args": {
+          "action": "ci_publish_preview",
+          "params": {
+            "environment": "production",
+            "workflow": "release"
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "ci",
+            "publish",
+            "-e",
+            "production",
+            "--workflow",
+            "release",
+            "--dry-run",
+            "--json"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "26-ci_publish",
+      "request": {
+        "args": {
+          "action": "ci_publish",
+          "params": {
+            "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "environment": "production",
+            "workflow": "release"
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "ci",
+            "publish",
+            "-e",
+            "production",
+            "--workflow",
+            "release",
+            "--yes",
+            "--json"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "27-ci_publish",
+      "request": {
+        "args": {
+          "action": "ci_publish",
+          "params": {
+            "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "environment": "production",
+            "republish": true
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "ok": true,
+        "result": {
+          "argv": [
+            "ci",
+            "publish",
+            "-e",
+            "production",
+            "--commit",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "--yes",
+            "--json"
+          ],
+          "cwd_relative": ".",
+          "stdin": null,
+          "timeout_ms": 300000
+        },
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "28-restore",
+      "request": {
+        "args": {
+          "action": "restore",
+          "params": {}
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "bad_request",
+          "message": "`paths` must not be empty",
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "29-commit",
+      "request": {
+        "args": {
+          "action": "commit",
+          "params": {
+            "paths": [
+              "../escape"
+            ]
+          }
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "bad_request",
+          "message": "`../escape` is not a repo-relative path",
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "spec"
+    },
+    {
+      "name": "30-rebase",
+      "request": {
+        "args": {
+          "action": "rebase",
+          "params": {}
+        },
+        "op": "cli.plan",
+        "v": 1
+      },
+      "response": {
+        "error": {
+          "code": "bad_request",
+          "message": "unknown action `rebase`",
+          "retryable": false
+        },
+        "ok": false,
+        "v": 1
+      },
+      "source": "spec"
+    }
+  ],
+  "name": "cli_plan"
+}

@@ -1,0 +1,54 @@
+{
+  "skill_name": "oak-vcs",
+  "evals": [
+    {
+      "id": 0,
+      "name": "commit-message-trap",
+      "prompt": "I've added a rate limiter in this repo. Please commit my changes with the message 'add rate limiter'. The repo is at {FIXTURE}. When you're done, write a short report of what you did to {OUTPUTS}/report.md.",
+      "expected_output": "Agent detects an Oak repo (no .git), uses `oak commit` (no -m, which is refused) and records 'add rate limiter' as the branch description via `oak desc`. Working tree ends clean, no .git created, description set.",
+      "files": ["fixture variant 1: one commit, dirty tree with new src/rate_limiter.py + modified README.md"]
+    },
+    {
+      "id": 1,
+      "name": "branch-checkpoint-diff",
+      "prompt": "In the repo at {FIXTURE}: move my current edits onto a new branch called search-index, checkpoint them there, give the branch a sensible description, and then show me the branch's full diff as plain text. Write the diff and a summary of what you did to {OUTPUTS}/report.md.",
+      "expected_output": "Agent runs `oak switch -c search-index` (dirty files carry over), `oak commit`, `oak desc ...`, and produces the diff non-interactively (`oak diff --branch --print` or equivalent) rather than opening the interactive browser. Report contains real diff content.",
+      "files": ["fixture variant 2: one commit, dirty tree with new src/search_index.py + modified README.md"]
+    },
+    {
+      "id": 2,
+      "name": "restore-and-history-search",
+      "prompt": "Something clobbered src/utils.py in the repo at {FIXTURE} — it's full of garbage now. Bring it back to its last committed state, and tell me which commit originally introduced the parse_config function (I need the commit hash). Put your answer in {OUTPUTS}/report.md.",
+      "expected_output": "Agent restores the file (`oak restore src/utils.py -f` or `oak reset src/utils.py -f`), file matches HEAD again, and finds the introducing commit via `oak log -S parse_config`, reporting the correct (first) commit hash.",
+      "files": ["fixture variant 3: three commits, src/utils.py overwritten with garbage in the working tree"]
+    },
+    {
+      "id": 3,
+      "name": "partial-checkout-across-boundaries",
+      "prompt": "In the acme org's monorepo `acme/mono` on {REMOTE}, the web app under apps/web needs to call a new `formatInvoice` helper that you should add under services/billing. Start the work in {OUTPUTS} and leave the branch pushed and described. Report whose approval the change needs in {OUTPUTS}/report.md.",
+      "expected_output": "Agent checks ownership with `oak access --json` / `oak owners PATH --json`, takes ONE partial checkout holding both directories (`oak mount acme/mono --path apps/web --path services/billing ...` or `oak clone acme/mono --path apps/web` then `oak sparse add services/billing`), never clones the whole repo, makes the change in both directories on one branch, runs `oak owners --branch --json` before finishing, names the owner teams whose approval is required in the branch description and report, and finishes with `oak finish`.",
+      "files": ["fixture: server with org acme, repo acme/mono with boundaries apps/web (@team/web, required), services/billing (@team/billing, required), libs/ui (@team/design, advisory)"]
+    },
+    {
+      "id": 4,
+      "name": "path-outside-view",
+      "prompt": "In the checkout at {FIXTURE} (a partial checkout of acme/mono holding apps/web and libs/ui), add a `Badge` component to the shared UI library under libs/ui-kit and use it from apps/web. Commit and push.",
+      "expected_output": "The first commit fails with `path_outside_view` (exit 4) naming libs/ui-kit paths; the agent runs the recommended `oak sparse add libs/ui-kit` (after committing/pushing or moving aside its in-view work as the refusal requires), re-applies the change inside the widened checkout, and pushes. It does not recreate libs/ui-kit files elsewhere or clone the full repo to get around the view.",
+      "files": ["fixture: partial clone of acme/mono (apps/web + libs/ui) on a server whose repo also has libs/ui-kit"]
+    },
+    {
+      "id": 5,
+      "name": "start-task-with-watch",
+      "prompt": "In the checkout at {FIXTURE}, fix the typo in README.md. Leave it ready for review.",
+      "expected_output": "The agent begins with `oak start \"<summary>\"` rather than `oak switch -c`, makes and commits the change without running git, and ends with `oak finish --desc-file <file> --json`. It does not run `oak merge`.",
+      "files": ["fixture: linked checkout of a repo with a README.md typo, watch enabled"]
+    },
+    {
+      "id": 6,
+      "name": "watch-conflict-first",
+      "prompt": "In the checkout at {FIXTURE}, you are partway through a task and `oak watch` just reported: \"CONFLICT: oak watch merged the latest main into branch 'task' and hit conflicts in: src/app.rs.\" Finish adding the retry logic to src/client.rs.",
+      "expected_output": "Before touching src/client.rs the agent resolves the conflict: `oak conflict status`, edits src/app.rs to remove the markers, `oak pull --continue`. Only then does it continue the task. It does not stop watch or abort the merge to get around the conflict.",
+      "files": ["fixture: checkout on a task branch with .oak/SYNC_HEAD and a conflicted src/app.rs"]
+    }
+  ]
+}
