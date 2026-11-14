@@ -1,0 +1,134 @@
+# Build, sign, and publish the nightly `oak` on Oak's own macOS release
+# runner: every CLI target and the notarized OakMount app, built from the
+# newest verified commit on `main`, stamped as a nightly build, minisigned with the release key, and
+# staged on oak.space as the release version `nightly`. That version is never
+# promoted, so /api/releases/latest, install.sh and stable `oak upgrade` never
+# see it; `oak upgrade --channel nightly` asks for it by name.
+#
+# The same phases as release.yml, run by scripts/release-oak-ci.sh with
+# RELEASE_CHANNEL=nightly; its header says what the nightly does differently
+# (the build stamp, the trusted comment clients read the build from, and
+# publishing with no promotion, plus a dated Oak prerelease). When every
+# platform already serves a nightly of this commit, the preflight says so and
+# nothing is built; set the environment variable NIGHTLY_FORCE=true to rebuild
+# anyway.
+#
+# Trigger: the `nightly` channel's daily timer, set on the repo's Runners page
+# so a commit can't change it. To publish one by hand:
+#   oak ci deploy --environment nightly --workflow nightly --yes
+#
+# Runner: the release runner (host mode, `macos` + `arm64`), bound to
+# `nightly` as well as `production`. It runs one job at a time, so a nightly
+# and a release never overlap.
+#
+# Secrets (in the `nightly` environment; the same values as `production`'s):
+#   OAK_ADMIN_API_KEY            oak.space release staging
+#   OAK_RELEASE_API_KEY          oak.space API key with write access to
+#                                OAK_REPO: publishes the nightly prerelease.
+#                                Without it the run updates the channel,
+#                                then fails
+#   MINISIGN_SECKEY, MINISIGN_PASSWORD
+#   MACOS_CERT_P12_BASE64, MACOS_CERT_PASSWORD, MACOS_KEYCHAIN_PASSWORD
+#   MACOS_SIGN_IDENTITY          optional cross-check of the derived identity
+#   MACOS_HOST_PROFILE_BASE64, MACOS_EXT_PROFILE_BASE64
+#   MACOS_NOTARY_KEY_BASE64, MACOS_NOTARY_KEY_ID, MACOS_NOTARY_ISSUER_ID
+# Variables (optional): NIGHTLY_FORCE, NIGHTLY_KEEP, RELEASE_DRY_RUN, OAK_URL,
+# OAK_REPO, OAK_BIN.
+on: [workflow_dispatch]
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_CHANNEL: nightly
+
+jobs:
+  nightly:
+    runs-on: [macos, arm64]
+    environment: nightly
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The same fetch actions/checkout performs, inline: the job's task token
+      # (GITHUB_TOKEN) authenticates it, and it only works while this job runs.
+      - name: checkout
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c "http.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --no-tags --no-recurse-submodules --depth=1 origin "+$GITHUB_SHA:refs/remotes/origin/main"
+          git checkout -q --force --detach "$GITHUB_SHA"
+
+      - name: prepare
+        run: bash scripts/release-oak-ci.sh prepare >> "$GITHUB_ENV"
+
+      # The build id, and whether oak.space already serves this commit's
+      # nightly. The other secrets are only checked for presence.
+      - name: preflight
+        env:
+          OAK_ADMIN_API_KEY: ${{ secrets.OAK_ADMIN_API_KEY }}
+          HAS_OAK_RELEASE_API_KEY: ${{ secrets.OAK_RELEASE_API_KEY != '' }}
+          HAS_MINISIGN_SECKEY: ${{ secrets.MINISIGN_SECKEY != '' }}
+          HAS_MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
+          HAS_MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD != '' }}
+          HAS_MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD != '' }}
+          HAS_MACOS_HOST_PROFILE_BASE64: ${{ secrets.MACOS_HOST_PROFILE_BASE64 != '' }}
+          HAS_MACOS_EXT_PROFILE_BASE64: ${{ secrets.MACOS_EXT_PROFILE_BASE64 != '' }}
+          HAS_MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 != '' }}
+          HAS_MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID != '' }}
+          HAS_MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID != '' }}
+        run: bash scripts/release-oak-ci.sh preflight
+
+      # No secret in these three: crate build scripts and proc macros run here.
+      - name: build darwin
+        run: bash scripts/release-oak-ci.sh build-macos
+
+      - name: build linux
+        run: bash scripts/release-oak-ci.sh build-linux
+
+      - name: build windows
+        run: bash scripts/release-oak-ci.sh build-windows
+
+      - name: sign darwin
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: bash scripts/release-oak-ci.sh sign-macos
+
+      - name: build app
+        env:
+          MACOS_HOST_PROFILE_BASE64: ${{ secrets.MACOS_HOST_PROFILE_BASE64 }}
+          MACOS_EXT_PROFILE_BASE64: ${{ secrets.MACOS_EXT_PROFILE_BASE64 }}
+        run: bash scripts/release-oak-ci.sh build-app
+
+      - name: remove signing keychain
+        if: always()
+        run: bash scripts/release-oak-ci.sh remove-keychain
+
+      - name: notarize app
+        env:
+          MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: bash scripts/release-oak-ci.sh notarize
+
+      - name: verify
+        run: bash scripts/release-oak-ci.sh verify
+
+      - name: minisign
+        env:
+          MINISIGN_SECKEY: ${{ secrets.MINISIGN_SECKEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: bash scripts/release-oak-ci.sh sign
+
+      - name: publish
+        env:
+          OAK_ADMIN_API_KEY: ${{ secrets.OAK_ADMIN_API_KEY }}
+          OAK_API_KEY: ${{ secrets.OAK_RELEASE_API_KEY }}
+        run: bash scripts/release-oak-ci.sh publish

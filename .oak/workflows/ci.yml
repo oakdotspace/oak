@@ -1,0 +1,86 @@
+# Native-CI checks for the oak CLI workspace (oakvcs-core + oakvcs-cli) —
+# the same suite as `make ci` and the GitHub Actions workflow
+# (.github/workflows/ci.yml): fmt -> clippy -> nextest -> doctests, then the
+# oakvcs-engine purity and coverage gates (these two are native CI only), on a
+# self-hosted Linux x86_64 runner carrying the `oak-ci` label. Oak runs this
+# file as GitHub Actions syntax; the runner image is oakspace's
+# infra/ci-runner (Rust 1.94 + rustfmt/clippy + nextest), so the install steps
+# below are `command -v ||` guards that no-op on it and still work on a stale
+# one. This workflow — and therefore the merge gate, which only reads
+# native-CI runs — covers linux-x86_64 alone.
+#
+# The other four shipped targets are covered elsewhere: darwin-arm64 by
+# `make ci` on a laptop, and darwin-x86_64 + windows-x86_64 by the
+# `shipped-targets` matrix in .github/workflows/ci.yml (clippy-only, on GitHub's
+# macOS and Windows runners). Those are NOT part of the merge gate — a Windows
+# break can still land on main; it just gets caught on the PR instead of
+# mid-release. Move them here by registering runners with those labels.
+#
+# Caching: actions/cache keeps the cargo registry + git sources on the
+# runner's own cache server, keyed by Cargo.lock. Target artifacts are
+# deliberately cold, and CI-only debug=0/incremental=0 keeps disk use
+# predictable; test coverage and release profiles are unchanged.
+#
+# The toolchain channel + components come from rust-toolchain.toml, which the
+# rustup shim honors on the first cargo call. No system deps are needed: the
+# Linux mount backend (fuser, default-features = false) never links libfuse,
+# and the mount tests exercise MountCore without FUSE — nothing here touches
+# /dev/fuse.
+# `branches` keeps tags out: a bare `push:` also fires for every tag, and a
+# nightly publishes one a day.
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+jobs:
+  check:
+    runs-on: oak-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-sources-
+      - name: disk before build
+        run: df -h . && du -sh . "$HOME/.cargo/registry" "$HOME/.cargo/git" 2>/dev/null || true
+      - name: bootstrap regression tests
+        run: node scripts/tests/ci-bootstrap-test.mjs
+      - name: install rust
+        run: '[ -x "$HOME/.cargo/bin/cargo" ] || command -v cargo >/dev/null 2>&1 || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none'
+      # Resolve required tools before spending time on the Rust gates.
+      # nextest is baked into the image; the guard covers a stale image.
+      - name: install nextest
+        run: bash scripts/bootstrap-ci-tool.sh cargo-nextest
+      - name: install cargo-llvm-cov
+        run: bash scripts/bootstrap-ci-tool.sh cargo-llvm-cov
+      - name: fmt
+        run: . "$HOME/.cargo/env" && cargo fmt --all -- --check
+      - name: clippy
+        run: . "$HOME/.cargo/env" && cargo clippy --workspace --all-targets -- -D warnings
+      # nextest runs each test in its own process — the mount tests share a
+      # process-global OAK_MOUNTS_ROOT env var and race under `cargo test`'s
+      # in-process threads, but pass cleanly when isolated (same reason
+      # `make ci` uses nextest).
+      - name: test
+        run: . "$HOME/.cargo/env" && cargo nextest run --workspace
+      # nextest doesn't run doctests — run them separately so doc examples
+      # stay gated (none exist today; this keeps future ones honest).
+      - name: doctests
+        run: . "$HOME/.cargo/env" && cargo test --workspace --doc
+      # The engine library's bar (docs/engine-contract.md): pure dependencies
+      # and 90% line coverage of engine/. llvm-cov rebuilds with its own
+      # instrumented profile, so this runs on its own package only.
+      - name: engine stays pure
+        run: . "$HOME/.cargo/env" && make engine-pure
+      - name: engine coverage
+        run: . "$HOME/.cargo/env" && make engine-coverage
+      - name: disk after build
+        run: df -h . && du -sh target "$HOME/.cargo/registry" "$HOME/.cargo/git" 2>/dev/null || true

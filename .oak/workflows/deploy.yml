@@ -1,0 +1,44 @@
+# Production deploy of the server, manual only: one authorization of the
+# protected `production` channel builds, stages and activates an exact main
+# commit (server/docs/runbooks/11-protected-deployment.md).
+#
+# The job runs only on the runner bound to `production` and holds only the
+# stage key, which can upload a build but not activate it. The box activates
+# after verifying the release grant oak.space signed for this run.
+#
+# The checkout is inline git rather than actions/checkout, so no third-party
+# action code runs next to the stage key, and no cache is restored or saved.
+#
+# Protected channel values: DEPLOY_STAGE_SSH_KEY (secret), DEPLOY_KNOWN_HOSTS,
+# DEPLOY_HOST, DEPLOY_PORT, DEPLOY_USER, DEPLOY_TARGET.
+on: [manual]
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  deploy:
+    runs-on: deploy
+    steps:
+      # The job's task token (GITHUB_TOKEN) authenticates the fetch, and only
+      # while this job runs.
+      - name: checkout
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c "http.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --no-tags --no-recurse-submodules --depth=1 origin "+$GITHUB_SHA:refs/remotes/origin/main"
+          git checkout -q --force --detach "$GITHUB_SHA"
+      - name: install rust
+        run: '[ -x "$HOME/.cargo/bin/cargo" ] || command -v cargo >/dev/null 2>&1 || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none'
+      - name: install bun
+        run: '[ -x "$HOME/.bun/bin/bun" ] || command -v bun >/dev/null 2>&1 || curl -fsSL https://bun.sh/install | bash'
+      # Protected secrets reach a step only through expressions. The stage key
+      # reaches this one; the channel values, OAK_CI_* identity and release
+      # grant arrive as job env.
+      - name: build and deploy
+        env:
+          DEPLOY_STAGE_SSH_KEY: ${{ secrets.DEPLOY_STAGE_SSH_KEY }}
+        run: bash server/scripts/ci/deploy.sh

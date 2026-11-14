@@ -1,0 +1,1170 @@
+# Oak command reference
+
+First compiled from `oak <command> --help` at v0.101 and updated incrementally since; `oak <command> --help` on your installed version is authoritative. Global: `oak [--verbose] <command>`.
+
+## Contents
+
+- [Create or get a repo](#create-or-get-a-repo): init, clone
+- [Working tree](#working-tree): status, diff, commit, restore, reset, change capture/export
+- [Branches & tasks](#branches--tasks): branch, start, switch, stacked branches, desc, finish, close, split
+- [Review & merge](#review--merge): merge (approvals: [Groups](#approvals))
+- [History & inspection](#history--inspection): log, hash, info, agent state, file/tree/refs inspect
+- [Sparse checkouts](#sparse-checkouts): sparse, restricted content
+- [Sync with the server](#sync-with-the-server): push, pull, fetch, watch, config
+- [Account & repos](#account--repos): login/logout/whoami, repo visibility
+- [Groups and path rules](#groups-and-path-rules): groups, group, access, owners, approve, partial checkouts, repo move/adopt
+- [Roots](#roots): root list, show, create, archive, pull, push (separate timelines, release lines)
+- [Sites](#sites): Oak Pages
+- [Retention](#retention): retention list, set, remove; expired history versions
+- [Repo health](#repo-health): doctor, blob info
+- [More](#more): export, environment, archive, open, feedback, completions, upgrade
+- [MCP server](#mcp-server): oak mcp
+
+## Create or get a repo
+
+### oak init [PATH] [--json]
+Initialize a repository in the current (or given) directory. `--json` never
+prompts and prints one receipt (`kind: init`, `path`, `branch`,
+`imported_commit_count`).
+
+### oak clone [ORG/REPO] [DEST]
+Clone from the server. Bare `repo` defaults to your personal org. Omitting
+the repo opens an interactive picker — always pass it when unattended.
+- `--branch NAME` — select that open remote branch; capable servers bind it to
+  the pull and materialize it directly, while legacy servers retain the
+  clone-then-fetch behavior
+- `--expected-head FULL` — with `--branch` (or with `--detached`, which pins
+  the default branch `main`), require the server to prove that
+  exact open branch/head before creating the destination, bind it to the pull,
+  and materialize that branch directly. The pin never falls back or retries at
+  a different head. It does not narrow history; add `--shallow` independently.
+- `--shallow` — only the newest commit on the selected branch (the default
+  branch when `--branch` is omitted). Its working tree remains complete, but
+  local history plus integrity-proof and recovery scope are narrower.
+- `--path PREFIX` — sparse clone: check out only files under these prefixes
+  (repeatable or comma-separated); manage later with `oak sparse`
+- `--from LOCAL_CHECKOUT` — seed content from an existing local checkout of
+  the same repository (same owner/name and remote origin; refused otherwise
+  before anything is created). Only content chunks are reused, each re-hashed
+  against the server's descriptors; commits, trees, refs and the head still
+  come from the server, and no credentials, locks, refs, metadata or dirty
+  files are copied. A source that becomes unreadable mid-clone only forfeits
+  reuse (`seed.skipped_reason`); one whose identity changes stops the clone.
+  The `--json` receipt adds a `seed` block whose chunk counters partition the
+  considered chunks, and `observed.chunks.seeded_from_local_unique`.
+- Clone first negotiates a bounded metadata proof. Authentication grants repo
+  access but never silently upgrades this to physical object probing; pull
+  independently verifies every transferred hash.
+- `--allow-unverified-integrity` — proceed only when that bounded proof stops
+  on its typed history/tree/path/wall budget. It never overrides corruption.
+  Without it, such an inconclusive proof exits `8` and recommends the exact
+  `--shallow` retry (clone never narrows on its own). The waiver needs the
+  snapshot pin current servers issue with an inconclusive report; older
+  servers issue none, so use `--shallow` there. A busy server (HTTP 429) is
+  retried per its Retry-After for up to 60s, then fails with exit `6`.
+- `--allow-legacy-scope` — when an accessible legacy server lacks proof
+  capabilities, waive only the pre-download proof for `--shallow`, `--branch`,
+  or `--path`; the pull request still carries the scope and verifies hashes.
+- `--json` — require an explicit Oak `ORG/REPO` and emit one acquisition
+  receipt on stdout. The receipt separates requested history/materialization
+  from the proof profile, counts observed pull entries and unique verified
+  chunks, and names transport/disk facts that remain unknown. Legacy fallback
+  phases are listed separately, and initial-pull versus final selected-head
+  snapshot binding is explicit; no credential value is emitted.
+- `--detached` — read-only acquisition: land on a detached HEAD at the default
+  branch's head without creating a personal branch (`result.local_branch:
+  null`, `result.detached: true`). `oak commit` refuses until `oak switch -c`.
+  With `--expected-head FULL` the default branch must be open at that exact
+  head (stale pin: refused before any file is created) and HEAD lands there;
+  the receipt reports `request.selected_branch: "main"` with
+  `selected_branch_snapshot_bound: true`. `--detached` still cannot be
+  combined with `--branch`, and `--branch main` stays refused.
+- `-r, --remote URL` — server URL
+
+## Working tree
+
+### oak status
+- `--json` — machine-readable; `--compact` — bounded JSON with recall metadata
+- `--porcelain` / `-s, --short` — stable compact changed-path rows (like
+  `git status --short`)
+- `--reconcile` — apply pending remote-merge branch reconciliation first
+
+Full JSON retains `changes` for compatibility and also separates
+`working_changes` (uncommitted, relative to current HEAD) from
+`branch_changes` (committed contribution, exact fork base to branch head).
+
+### oak diff [REVS] [PATHS]
+Up to two leading args naming a branch/commit (unique hash prefix ≥ 4 hex
+chars) select endpoints; remaining args (or after `--`) filter paths.
+- Bare `oak diff` = working tree vs HEAD, **interactive browser** — use
+  `--print`, `--stat`, `--name-only`, or `--json` when unattended
+- `oak diff <branch>` — branch contribution vs fork point, checkout-free
+- `oak diff <rev> <rev>` — two revisions (default mode `tree`)
+- `--branch` — whole current branch (commits + dirty files) vs fork point
+- `oak diff --branch --json` — the same contribution plus local changes,
+  not the named-branch snapshot. Add `--hunks`, `--max-bytes`, and
+  `--changed-files-limit` for progressive disclosure; generated continuations
+  retain branch scope, path quoting, and rendering choices.
+- `--mode contribution|tree|net-merge`; `--against BASE` for branch endpoints
+- `--json` with `--hunks` adds patches; `--max-bytes N` bounds them
+  (truncation is flagged: `hunks_truncated`, per-file `patch_omitted`);
+  `--changed-files-limit/-offset` page the summaries
+- `--exit-code` — exit 1 when differences exist (predicted conflicts count)
+- `-U N` context lines; `--word-diff`; `-a/--text` for oversized text files
+- `--name-only` combines with `--print` (paths only, non-interactive)
+- `--check [--json]` — trailing whitespace, space before tab, new blank
+  lines at EOF, and leftover conflict markers on added lines, as
+  `path:line: problem` or `{path,line,kind}` rows; exit 1 when found
+- `--json --fingerprint` — appends `fingerprint` {change_id, base_commit,
+  base_tree, result_tree, changed_file_count}; `change_id` equals the id
+  `oak change capture` would record for the same tree/paths. Read-only, no
+  linked remote needed. Also on `oak status --json --fingerprint`
+- `--verify-fingerprint ID [-- PATHS]` — exit 0 when the working tree still
+  has that change_id, 1 when it does not
+- Printed patches name `/dev/null` (plus `new file mode` / `deleted file
+  mode`) for added/deleted files, so non-empty adds/deletes and edits
+  round-trip through `git apply`. The header is `diff --oak`, not
+  `diff --git`, so `git apply` ignores the mode lines: mode changes,
+  empty-file creates/deletes, and renames do not carry over — use
+  `oak change export` for those
+
+Current-branch JSON uses `kind: current_branch_diff`, `diff_mode: contribution`,
+and local fork/head lineage evidence. Missing ancestry remains an error, never
+a fallback to tree mode. Sparse/path-permission exclusions remain outside the
+visible comparison; excluded files are not deletions. `branch_head` and the
+locally recorded commit count do not identify the dirty result, prove current
+remote state, or authorize merging. The worktree is scanned without persisting
+dirty blobs; this is not an atomic filesystem snapshot. Existing ordinary
+`oak diff --json` and named/two-revision diff shapes are unchanged. `--branch`
+still cannot be combined with revision endpoints. Inside a mount it diffs the
+virtual branch plus its overlay against the fork point, from the overlay alone
+(the mount tree is never walked).
+
+### oak commit [PATHS]
+Local checkpoint of the whole tree, or only the given paths. Does not push by
+itself, but a running `oak watch` pushes each new commit within seconds.
+- No `-m` — commits are messageless; the branch description is the narrative
+- `--push` — checkpoint, then publish pending branch commits
+- `--push` uses the same credentials and server authorization as `oak push`.
+  The local checkpoint survives a publication error. An explicit rejection may
+  report a retry command; an unconfirmed acknowledgement reports no retry and
+  supplies read-only reconciliation commands instead. Covered branch-head publications persist a
+  bounded local operation record; inspect it after restart with `oak agent
+  state --refresh --json --compact`.
+- `--no-verify` — skip pre-/post-commit hooks
+- `--json --quiet` — machine-readable, no human text
+
+Oak's canonical tree paths cannot represent literal backslashes in Unix
+filenames. Working-tree scans reject those paths with `InvalidPath` (exit 2)
+before committing; rename the file or directory first. Windows directory
+separators still normalize to `/`. Ignored paths are not scanned.
+
+### oak restore [PATHS] [-s COMMIT] [-f] [--json]
+Restore files to HEAD (or `--source` commit) state. `-f` skips confirmation.
+`-f --json` prints one receipt (`kind: restore`: `changed`, the paths
+actually `reverted` and `deleted`); `--json` without `-f` is a usage error,
+since it cannot prompt.
+
+### oak reset [PATH] [-f] [--json]
+Discard uncommitted changes (whole tree, or one path). `-f` skips
+confirmation. `-f --json` prints one receipt (`kind: reset`: `changed`, the
+paths actually `reverted` and `deleted`).
+
+### Immutable working-tree change capture
+
+#### oak change capture --json [PATHS...]
+
+Capture the working tree's selected changes as immutable blobs and a derived
+tree in the native local SQLite repository without creating a commit, advancing
+HEAD or another ref, changing working-tree files, contacting the network, or
+using/updating the stat cache. With no paths the scope is full; path arguments
+use exact-or-descendant matching and are resolved lexically, so selecting a
+symlink selects the link rather than its target. On POSIX, literal backslashes
+in physical paths or path arguments are rejected before file bodies are stored,
+because Oak's canonical path format cannot round-trip those filename bytes.
+Windows path separators remain supported.
+
+Base paths outside the sparse cone are preserved. Restricted and declared
+known-loss base paths whose marked blobs are missing locally are also preserved,
+even when replacement paths are present in the working tree. Whole-tree capture
+reports these exclusions in JSON `warnings` and effective-scope counts, and in
+human warnings; present excluded bytes are explicitly reported as not captured.
+An explicit path scope containing a present unavailable base path fails with
+`capture_scope_excluded` before storing any selected bytes. Restriction remedies
+require access from an org admin; known-loss exclusions concern recorded missing
+content. Capture never grants access, clears either marker, or recovers content.
+
+The versioned receipt binds repository authority (stored origin, owner, name),
+the current branch's effective base commit/tree, requested scope, and a portable
+`CanonicalChangeSetV1` identity. That identity is BLAKE3 over domain-separated,
+length-framed fields: verified derived base/result trees and canonical ordered
+path before/after blob+mode states. It never hashes JSON, rendered hunks,
+timestamps, repository names, or commit/ref names.
+
+Receipt path and change samples are capped at 64 items. Their full counts,
+omitted counts, and completeness flags make truncation explicit; the identity
+still covers the complete canonical scope and change set. The receipt reports
+requested scope separately from the effective intersection with the sparse cone
+and unavailable-base exclusions. Stored origins are normalized and omit URL
+userinfo, query, and fragment data.
+
+Capture reads back and verifies every selected new blob row and each canonical
+node identity in the stored result-tree closure, including legacy tree rows.
+It does not hydrate or byte-verify unchanged
+inherited blobs, so the receipt says that inherited missing objects may remain.
+Selected regular-file bodies are currently read whole; backend scheduling
+limits aggregate in-flight work, but capture does not claim a strict per-file
+memory bound.
+
+Oak's workdir lock excludes cooperative Oak writers during capture. Ordinary
+filesystem writers do not honor that lock, so capture is explicitly non-atomic:
+per-file before/after metadata plus a second inventory detect observed races and
+return `worktree_capture_raced`, but success is not a claim that the filesystem
+provided an atomic point-in-time snapshot. Missing base commit/tree objects are
+reported as typed incomplete-local-data errors before working bytes are stored.
+Only the current v1 Oak object format is supported in this initial slice.
+
+#### oak change export CAPTURE_ID --output FILE [--json]
+
+Export one durable local capture occurrence as a self-contained ZIP64 archive.
+The archive contains the complete canonical change descriptor plus deduplicated
+logical bytes for every referenced before/after blob. Export opens the SQLite
+repository read-only, never scans the current worktree, contacts no remote, and
+does not hydrate missing content. It creates a private temporary file in the
+output's existing parent and atomically publishes without replacing an existing
+file, symlink, or directory. Missing, restricted, known-lost, or corrupt local
+content fails before publication. Repositories predating durable capture tables
+must be opened with a compatible current Oak binary and recaptured; export does
+not migrate or backfill them.
+
+## Branches & tasks
+
+### oak branch [list|show|diff|review|triage|rename|close] [--json]
+- bare / `list` — list branches; `--show-current` prints the current name
+- `show NAME` — one branch
+- `diff NAME` — checkout-free diff summary; `--remote` pins the remote heads,
+  and with `--hunks` (or `--remote --print` for a plain unified patch) hydrates
+  only the returned files' bytes through the verified raw route (bounded,
+  hash-checked, ref-free). Per-file `patch_omitted_reason` says why a patch is
+  missing; `acquisition` reports requests/objects/bytes (zero when warm)
+- `review NAME` — checkout-free review evidence; `--merge-preview` adds local
+  conflict prediction; `--remote` reviews the remote branch without switching
+- `triage` — batch analysis over many branches (`--against`, `--status`,
+  `--only BUCKET`, `--limit`, `--analysis-depth`)
+- `rename OLD NEW`
+- `close [NAME]` — alias for `oak close` with the same arguments, output and
+  exit codes
+
+Remote review and triage prepare source/target trees and the exact verified
+merge-base tree closure through the existing commit-info endpoint. Shared bases
+are deduplicated within a triage request. Each fetch accepts at most 256 commit
+identities. Source/target and base preparation share 128 MiB of response bytes
+and a 30-second cooperative deadline. A memoized structural check runs on cached
+and fetched trees before any manifest expansion: distinct prepared roots share
+a budget of one million expanded entries and 64 MiB expanded file-path bytes,
+with maximum tree depth 256 and 100,000 unique trees. Missing trees are fetched;
+budget exhaustion is incomplete evidence, not corruption. Cached complete
+manifests need no network fetch. Deadline checks surround parsing and occur in
+validation/storage loops; the async timer does not preempt synchronous work or
+promise a hard wall-clock limit for the entire review command. These are review
+bounds, not new push/pull caps.
+Preparation may cache verified objects and refresh remote metadata, but does not
+switch branches, move the checkout, or scan/store dirty file bytes. It does not
+fetch arbitrary ancestry or all base blob contents: missing ancestry, denied or
+missing objects, budget exhaustion, and missing merge-content bytes remain
+explicit failures/unavailable evidence, never a clean merge certification.
+
+### oak start "SUMMARY" [--name NAME] [--no-push] [--no-watch] [--clean] [--json]
+Begin a task in one step: create a branch from latest main (verified against
+the remote on every start; the receipt's `base_branch`, `base_head`,
+`base_head_source`, `base_head_observed_at` say what it started from —
+`base_head_source: "verified_remote"`, or `"unverified"` with
+`base_head_error` when the remote was unreachable and local main was used)
+named after SUMMARY (slugified, `-2`/`-3` when taken locally or on the remote; or
+`--name`), with `oak switch -c` semantics (dirty files that main didn't change
+are carried; refuses (exit 4) when main changed one; `--clean` discards them), set its description to SUMMARY, publish it, and start
+`oak watch`. Push is skipped by `--no-push` or `watch.auto_push = false` (and
+when the checkout is not linked yet); watch by `--no-watch` or
+`watch.enabled = false`. A push or watch failure keeps the branch; the receipt
+(`metadata_synced`, `pushed`, `pushed_head`, `push_error`, `watch_running`,
+`watch_error`, `branch_url`) separates metadata visibility from exact head
+publication. `pushed: true` includes the verified remote head. An unchanged
+branch needs server capability `branch_seed_protocol=parent_head_cas_v1`; an older
+server can sync metadata while `pushed` remains false. An unconfirmed reply
+names read-only reconciliation commands: inspect before retrying. Ordinary
+`oak push` can publish the inherited head without a synthetic checkpoint.
+After an empty task follows its parent, the same protocol uses an explicit
+`expected_head` CAS and a bounded published-ancestry proof to fast-forward its
+remote head. It refuses branch-owned work and never rewinds an advanced target.
+Initial-only `parent_head_v1` and unknown versions are refused before a head
+publication request; they cannot silently ignore the expected-head fence.
+
+### oak switch [NAME]
+- `NAME` — switch to a branch (fetched from remote when not local), or with
+  `-d/--detach`, detach HEAD at a commit hash
+- `-c, --create [NAME]` — create off latest main, verified against the remote
+  each time (generated name if omitted); keeps dirty files that main didn't
+  change and refuses (exit 4, `local_changes_would_be_overwritten`) when main
+  changed one; falls back to
+  local main, with a warning, if the remote is unreachable
+- `--clean` — discard working-tree changes and start from fresh main
+- `--json` — one receipt (`kind: switch`, `branch`, `head`,
+  `previous_branch`, `previous_head`); needs NAME or `-c`
+- `-c NAME --stack` — stack the new branch on the current branch instead of
+  main (starts at its head; dirty files carry over)
+- `-c NAME --parent BRANCH` — stack on another open local branch (needs a
+  clean tree, or `--clean`); `--parent main` is an ordinary branch
+- Bare `oak switch` is an interactive picker — avoid unattended
+
+### Recovering an interrupted switch
+
+A switch records durable recovery intent before changing files and updates
+branch references after materialization. If the process is killed, status and
+repository writes report the interrupted switch and name the exact
+`oak switch TARGET` command to resume it. Re-run that command; do not commit the
+partial working tree or delete `.oak/switch-journal.json`.
+
+Recovery checks affected paths against their original and intended contents
+before writing. If an affected path was edited after the interruption, recovery
+stops without changing files. Move that edited path outside the checkout to
+preserve it, then retry. Newly created files outside the recorded switch paths
+are preserved. A prior `--clean` request still authorizes deleting the original
+untracked files recorded by that switch; it does not authorize deleting new
+unrelated files created after the interruption.
+### Stacked branches
+A stacked branch's parent is another open branch (`main <- a <- b`), so its
+work builds on unmerged work.
+- `oak diff --branch`, `oak status`, and review show only the branch's own
+  work against its parent.
+- `oak pull` fetches the parent from the remote and merges it in, the same
+  way a `main`-parented branch merges `main`.
+- `oak push` refuses until the parent is on the remote. Push the bottom of
+  the stack first.
+- Land bottom-up. `oak merge` on a stacked branch refuses and names the
+  bottom branch. When a branch lands (or closes), the server restacks its
+  open children onto its own parent; the merge JSON lists them in
+  `restacked_branches`. `oak pull` in a child then adopts the new parent and
+  merges it in; the pull receipt reports `restacked_from`.
+- `oak merge --into-parent` folds a stacked branch into its parent locally
+  instead.
+
+### oak desc [TEXT] | --file FILE
+Set the current branch description (`-` for stdin). This becomes the
+squash-merge message.
+
+### oak finish [--desc TEXT | --desc-file FILE] [--json]
+Finalize the branch: stop `oak watch` (marking the branch idle), preflight, save description, checkpoint dirty work,
+publish. The JSON names the completed phase. Explicitly rejected legs may name
+a next manual command; unconfirmed publication reports no retry command and
+supplies read-only reconciliation commands instead. A retained branch-head
+operation blocks further push/finish advice until it is reconciled and
+explicitly retired. Watch stays stopped once finish goes ahead (`oak watch
+start` resumes it if work continues); a preflight refusal restarts it.
+
+### oak close [NAME]
+Close a branch (also available as `oak branch close`).
+- `--remote --reason R --json` — close a remote branch without switching to it.
+  A remote close (single or many) only updates branch metadata locally; it
+  never moves a local head that is ahead of or diverged from the remote. The
+  receipt reports `local_head.relation` (`same`, `fast_forwarded`,
+  `local_ahead`, `diverged`, `untracked`), `local_ahead: N`, and
+  `local_only_commits: true` when this checkout holds commits the remote lacks.
+- `NAME@HEX` with a short hex suffix is a branch name when a local branch has
+  that literal name; otherwise it is treated as a malformed pin and refused.
+- `--remote A@FULL_HEAD B@FULL_HEAD ... --json` — close several remote branches
+  checkout-free. Every target must pin its exact head; each branch is closed
+  independently and refused (`refused_head_moved`, nothing sent) when its
+  remote head differs from the pin. Rows are `closed`, `already_closed`,
+  `refused_head_moved`, `not_found`, `rejected`, `read_failed`,
+  `closed_after_head_moved`, or `unknown_outcome` (reconcile with `oak branch
+  list --remote --json`; never retry blindly). The receipt ends with the final
+  open-branch list. The fence is read-then-close (the server close has no
+  expected-head precondition): a push racing the close is not prevented; the
+  final listing reports it as `closed_after_head_moved` (inspect, reopen if
+  needed). Closed rows carry `fence_verified` (`true`, `false`, or
+  `"unchecked"` when the final listing was unavailable). Exit 0 only when every
+  branch is confirmed closed at its pin (or was already closed), 5 on
+  refusals/rejections/lost races, 6 when any outcome or fence re-check is
+  unconfirmed.
+
+### oak split [--from BRANCH] [--plan FILE|-] [--dry-run] [--json]
+Reorder/drop/split a branch's commits (git rebase -i + histedit split).
+Interactive editor by default; `--plan` drives it headless, and `--plan …
+--json` prints one receipt (`kind: split`, `written`, `branches` with each
+`name` and new `head`). Plan directives,
+one per line (`#` comments); every commit appears exactly once:
+
+```
+pick <hash>      # replay (unique prefix ok)
+drop <hash>      # omit
+split <branch>   # start a new branch off main; later picks go there
+```
+
+Picks before the first `split` rewrite the source branch in place. Split
+segments are parented on main, so each must stand alone on main — a dependent
+segment conflicts and **nothing is written**. Preview with `--dry-run`.
+
+## Review & merge
+
+Ownership-boundary approvals ([Approvals](#approvals)) gate the merge. CI
+doesn't: it runs on main after the merge; see
+[ci-and-merging.md](ci-and-merging.md).
+
+### oak merge [BRANCH]
+Squash-merge into `main`, server-side. Test locally first: branch pushes don't
+run CI, and CI runs on main after the merge. A stacked branch is refused:
+land the bottom of its stack first (see [Stacked branches](#stacked-branches)),
+or fold it into its parent locally with `--into-parent`. See
+[ci-and-merging.md](ci-and-merging.md) for `--force` (approvals),
+`--dry-run --json`, and `--continue`/`--abort`.
+
+## History & inspection
+
+### oak log [PATHS]
+- `-n N`, `--oneline`, `-v` (changed files), `--json`
+- `-S TERM` — commits changing occurrence count of a literal (git log -S)
+- `-G PATTERN` — commits whose changed lines match a regex (git log -G)
+
+### oak hash
+Print the current HEAD commit hash.
+
+### oak info [--json]
+Repo/branch metadata (org/repo link, remote, current branch).
+
+### oak agent state [--json] [--compact] [--refresh] [--publication-after ID]
+One compact JSON document with current state and the next useful agent
+actions. `--refresh` also refreshes remote freshness fields and read-only
+observations for displayed interrupted branch-head publications. Continue a
+bounded publication page with `--publication-after ID`. After separately
+accepting an exact operation's unknown outcome, `oak agent publication forget
+ID --acknowledge-unknown --json` removes only that local record without network
+access; it refuses a record owned by a live process.
+
+### Pinned local file evidence
+
+#### oak file inspect --at HEAD|FULL_HASH --json PATH [--max-bytes N]
+
+Inspect one committed file in a native local SQLite checkout without changing
+refs, database contents, or the working tree. `PATH` is repository-relative
+(even from a subdirectory), slash-separated, and cannot contain `..`, dot,
+empty or control components. Tracked `.oak/workflows` files are supported;
+paths are looked up only in committed trees, never read from the filesystem.
+`--at` is required: `HEAD` resolves once
+inside a pinned read snapshot; an explicit revision must be 64 lowercase hex
+characters. Branch names, prefixes, Git backends and mounts are unsupported
+locally; remote repositories use `--remote` (below). No hydration or working-copy fallback occurs.
+
+The metadata-only JSON binds the local repository root, resolved commit, root
+tree, containing tree, path, blob hash, file mode and declared/verified logical
+size. `verified` means the V1 commit header binds the root, visited tree objects
+are canonical and hash-verified, and the decoded file bytes match their hash
+and declared size. It does **not** verify the unhashed V1 change list, ancestor
+closure, unrelated files, or remote durability. Symlink content means its
+recorded target bytes; no target is followed. Binary bytes are hashed normally.
+The canonical empty blob requires no stored payload.
+`evidence.proof_scope` repeats the local snapshot source and the `commit_files`,
+ancestor-closure, and remote-durability exclusions for machine consumers.
+
+`status` distinguishes `verified`, `path_missing` (proven against visited trees),
+`object_missing`, `corrupt`, `budget_exceeded`, `unsupported` and `unavailable`
+(e.g. database I/O). Only verified exits 0; reported non-verified evidence exits
+1. Usage/backend/open errors use the standard JSON error envelope/exit contract.
+No file content is emitted unless `--output` is given.
+
+Verified evidence also carries `content_sha256` (SHA-256 of the logical bytes)
+and a separate `storage` object describing the local stored representation
+(`representation`, `codec`: `none`/`zstd`/`unknown`, `stored_bytes`). Sizes and
+`blob` always describe decoded logical bytes, never codec bytes.
+
+`--output FILE` also writes the verified logical bytes to a NEW file (owner-only
+permissions). Bytes are staged in a private temp file beside it and published
+with a no-clobber rename only after hash verification; `..` is resolved
+lexically against the current directory, and an existing path or a path inside
+`.oak` is refused, and nothing is created when the
+file does not verify. The JSON `output` object reports `written` and `bytes`.
+
+#### oak tree inspect --at HEAD|FULL_HASH --json [--max-files N] [--max-bytes B]
+
+List one pinned commit's complete path set from the local SQLite snapshot:
+per file `path`, `mode`, `blob`, logical `size`, `sha256` and `status`. Every
+tree is canonical-hash-verified and every listed file's bytes are verified
+against the blob hash. Budgets (default 100000 files / 1 GiB of logical bytes)
+stop the listing at an explicit point: `truncated: true` plus
+`truncation.limit` and `truncation.next_path`, and a larger-budget command in
+`recommended_next_commands`. `complete: true` (exit 0) only when every path was
+listed and verified; missing objects stay listed with their own status.
+
+#### oak refs inspect [--json] [--max-branches N]
+
+Every local ref from ONE pinned SQLite read transaction: `current_branch`,
+`attached`, legacy `metadata.head`, every branch's own head, parent
+inheritance (`effective_head`, `inherited_from`) and the effective HEAD with
+its `source` (`current_branch_head`, `parent_inheritance`,
+`detached_legacy_head`, `absent`). `disagreements[]` flags e.g.
+`legacy_head_differs`, `head_commit_missing`, `parent_cycle`,
+`dangling_parent`, `current_branch_unknown`. Exit 0 only when `consistent`.
+Read-only; no network.
+
+#### oak file inspect --remote --at BRANCH|FULL_HASH PATH [--json] [--max-bytes N]
+
+Read one committed file from the configured remote without a clone or checkout.
+A branch name is pinned once from the remote branch list; a full 64-hex hash is
+used as-is (abbreviations are rejected). Only that commit's metadata is fetched,
+then the file's bytes come from the permission-checked raw route and are
+admitted only when they hash to the pinned manifest entry (cached verified
+bytes are reused). Local refs never change. Without `--json` it prints the exact
+bytes; `--json` binds `commit`, `head_source`, `blob`, `mode`, `status`
+(`verified`, `path_missing`, `not_a_file`, `access_denied`, `not_found`,
+`budget_exceeded`, `hash_mismatch`, `invalid_path`, `unavailable`), UTF-8
+`content` (or `content_omitted_reason: "binary"`) and an `acquisition` receipt.
+Only verified exits 0.
+
+The logical blob budget defaults to 16 MiB and accepts 1 byte through 256 MiB;
+stored blob bytes are capped at that budget plus 1 MiB. Trees are capped at
+16 MiB each / 64 MiB total along the selected path, commit headers at 64 KiB,
+reference fields at 64 KiB, HEAD parent walks at 128 branches, paths at 4096
+bytes / 128 components, and zstd decoder windows at 8 MiB.
+Exhaustion is inconclusive, never proof of corruption. SQLite raw and zstd blob
+codecs are handled explicitly; unknown codecs/formats are not skipped. Existing
+legacy tree-entry rows are supported; a schema without codec/content columns is
+reported unsupported, never auto-migrated. SQLite may use WAL coordination
+sidecars while keeping its normal locking and read-snapshot semantics.
+
+## Sparse checkouts
+
+A Perforce-style partial checkout: the cone is your client view, and the
+server's ownership boundaries play the part of protections.
+
+```bash
+oak clone acme/monorepo --path services/billing,libs/shared  # download only these
+oak sparse add docs/api        # widen: downloads + writes docs/api, then re-syncs
+oak sparse set services/billing # narrow: removes the other paths from disk
+oak sparse remove docs/api     # drop one prefix from the cone
+oak sparse disable             # full checkout (downloads everything)
+oak sparse list --json         # {"sparse":true,"paths":[...]}
+```
+
+### oak sparse [list|show|set|add|remove|disable] [--json]
+Scope the working tree to path prefixes (the "cone"). Out-of-cone files stay
+in the repo and are carried forward verbatim by commits, but aren't
+downloaded or written. `set` replaces the cone, `add` extends it, `disable`
+returns to a full checkout; each re-syncs the working tree in place.
+
+- A cone change **refuses** (and changes nothing) while uncommitted or
+  untracked files sit in the old *or* new cone — the re-sync would overwrite
+  or delete them. Commit, `oak reset`, or move them first.
+- Content entering the cone is downloaded during the command. If it can't be
+  (offline, no remote), the command refuses and the cone stays as it was.
+- Work only inside the cone: `oak status`/`oak commit` ignore out-of-cone
+  files (both warn when such files exist on disk), and `oak commit <path>`
+  outside the cone is an error — `oak sparse add <path>` first.
+- `oak restore`/`oak reset` stay inside the cone. A merge/sync conflict on an
+  out-of-cone path stops with "widen the cone with `oak sparse add <path>`".
+
+### Restricted (server-withheld) content
+Files under a path you aren't granted on keep their names and hashes (so
+clone/pull verify) but their content is withheld. Clone, pull and switch
+skip them with `N file(s) are under restricted paths — content withheld by
+the server (ask an org admin for access)`; status and commit never treat
+them as deleted, and commits carry them forward unchanged. Restoring one, or
+a merge conflict on one, fails with the same access message. Changes you
+make under a restricted path warn at commit time — the server will likely
+refuse the push.
+
+Recovery is an access grant, not a repair: once an admin grants access,
+plain `oak pull` (even with nothing new upstream) downloads and writes the
+newly readable files. Never `oak pull --force` or `oak reset` to "fix"
+withheld files.
+
+## Sync with the server
+
+### oak push
+- `-f` — force: overwrite diverged remote history
+- `--json` — publish and emit the exact branch, pushed head, remote, review
+  URL, transfer counts (`chunks_required`, `chunks_already_present`,
+  `chunks_uploaded`, `bytes_uploaded`) and next commands as one append-only
+  result (regular checkouts)
+- `--repo ORG/REPO` (env `OAK_REPO`) — link a fresh repo on first push
+  without the interactive org picker (repo is created if missing)
+- `-r URL` remote override (env `OAK_REMOTE`)
+
+### oak pull
+Pull refreshes remote branch descriptions while retaining unsynced local edits.
+Existing checkouts upgraded from versions without description tracking preserve
+their old text when it differs from the remote and print a warning. Inspect
+`oak branch list --remote --json`, then run `oak desc` on the affected branch
+with the chosen description. Successful publication or a matching remote pull
+establishes a baseline; subsequent remote edits refresh automatically.
+Responses that started before a newer local metadata update cannot overwrite
+or acknowledge that update. Retry `oak pull` for a fresh description snapshot.
+
+Fetch the current branch, then merge in the parent branch. A stacked parent
+is fetched from the remote first. If it has landed or closed, the branch is
+restacked onto that parent's parent, and that is what gets merged in.
+- `-f` — discard local commits not on remote; sync to remote HEAD
+- `--continue` / `--abort` — resume/abandon a conflicted parent-sync
+
+### oak fetch [--json]
+Refresh local `main` only; never touches the working tree or merges.
+`--json` prints one receipt (`kind: fetch`, `head_before`, `head_after`,
+`updated`); progress goes to stderr.
+
+### oak watch [start|stop|status] [--foreground] [--json]
+A per-checkout background daemon (state and log in `.oak/watch/`) that keeps
+the current task branch live:
+- when main moves (server event stream, or a 30s poll on servers without it;
+  `OAK_WATCH_POLL_SECS` tunes it) it checkpoints dirty work
+  (`oak commit --no-verify`) and runs `oak pull`; a conflict is an ordinary
+  pull conflict (`.oak/SYNC_HEAD`) and pauses auto-pull until `oak pull
+  --continue` / `--abort` (after an abort it waits for main to move again)
+- pushes whenever the branch head moves past the last pushed head
+- heartbeats the branch as Active on oak.space (idle on stop)
+- never runs while another oak command holds the workdir lock or a
+  merge/sync is in progress; backs off on network errors; exits when the
+  branch becomes main, is closed/merged, or the checkout disappears
+- exits after 4 hours with neither a hook from an agent session nor a commit
+  (`OAK_WATCH_IDLE_SECS`, 0 disables; `stop_reason: idle_timeout`); the next
+  hook restarts it, while an explicit stop stays stopped
+- `oak watch` / `oak watch start` — start detached (idempotent);
+  `--foreground` runs in the terminal
+- `oak watch stop` — stop and mark idle; `oak watch status [--json]` —
+  running, branch, transport (`sse`/`poll`), last pull/push, pending
+  conflict, effective settings
+- `oak watch hook EVENT` — Claude Code hook entrypoint (SessionStart,
+  UserPromptSubmit, PostToolUse, SessionEnd; SessionEnd stops watch only when
+  no other session is active in the checkout) that prints notices as
+  `hookSpecificOutput.additionalContext`; installed into `.claude/settings.json`
+  by `oak skill install` and `oak init`, not by `oak clone`, as
+  `oak watch hook EVENT || true` so an older `oak` cannot block a prompt.
+  Re-running install upgrades bare commands. Claude Code only: other agents
+  read `oak watch status --json`
+
+### oak config get|set|unset|list [--global] [KEY [VALUE]] [--json]
+Agent-sync settings: `watch.enabled`, `watch.auto_pull`, `watch.auto_push`
+(booleans, default true). Without `--global`, `set`/`unset` edit this
+checkout's repo config; with it, `~/.oak/config.json`. `get` and `list` show
+the effective value and its source. Precedence: env (`OAK_WATCH`,
+`OAK_WATCH_AUTO_PULL`, `OAK_WATCH_AUTO_PUSH`) > repo > global > oak.space
+preference (Settings → Agent sync) > default.
+
+`watch.share_working` (env `OAK_WATCH_SHARE_WORKING`) is the exception: off by
+default and with no oak.space preference. When on, `oak watch` sends this
+checkout's uncommitted text files to the branch page within seconds, before
+any commit. It skips ignored files, binary files, files over 1 MiB and
+credential-shaped names (`.env`, `*.pem`, `id_rsa`), and clears them when the
+work is committed or watch stops. `oak watch status --json` reports `working`
+(`shared`, `waiting_for_push`, `unsupported`, `forbidden`, `refused`, `error`).
+
+## Account & repos
+
+### oak login / logout / whoami [-r URL]
+Authenticate against an Oak server; `whoami` prints the logged-in username.
+
+### oak repo visibility [public|private] [--repo ORG/REPO] [-r URL] [--json]
+With no argument, print whether the repo is public or private. `public` or
+`private` changes it; only owners and admins of the owning organization may.
+The repo defaults to the current checkout's. Setting the current value is a
+no-op (`"changed": false` in JSON). Exit `6` when the repo is not found, the
+caller isn't allowed, or the server is unreachable.
+
+## Groups and path rules
+
+**Groups** decide who can reach a repo. An org gives a group `read` or
+`write` on a repo, and everyone in the group gets that, along with the agent
+keys made for it. Every org has two built-in groups: `public` (anyone,
+signed in or not; giving it read is what makes a repo public) and `members`
+(everyone in the org: adding someone to it is how they join the org, and
+removing them takes them out). Org owners and admins can always read and
+write everything, and run `members`. Groups nest: a member of a sub-group counts as a member of every
+group above it, and a group's maintainers run it and every group below it.
+
+```bash
+oak groups [--org ORG] --json             # the groups you're in (* = this checkout works as it)
+oak group list --json                     # the org's groups (--org ORG outside a checkout)
+oak group show web --json                 # members, maintainers, repos, parent chain (`ancestors`)
+oak group create design --parent eng      # a sub-group (a maintainer of eng may)
+oak group add web alice [--maintainer]    # someone already in the org
+oak group add members alice               # add someone to the org itself (owners/admins)
+oak group remove members alice            # take them out of the org and every group
+oak group invite web alice                # adds them to the org first (org owners/admins)
+oak group remove web alice
+oak group grant web mono --role write     # org owners/admins; `grant public REPO` makes it public
+oak group revoke web mono                 # `revoke public REPO` makes it private
+oak group agent list --json               # the org's agents (service accounts) and their groups
+oak group agent add web deploy-bot        # the agent reaches what web reaches (maintainers of web may)
+oak group agent remove web deploy-bot
+oak group switch web                      # this checkout works as @group/web (see below)
+oak group switch --clear                  # back to your own access
+```
+
+An org's **agents** (service accounts, created under the org's Settings →
+Agents) reach what the groups they're on reach, never their creator's
+access. A new agent is on no group, so it reaches only public repos until
+`oak group agent add` puts it on one. Built-in groups don't take agents.
+
+`oak group switch NAME` makes a 30-day key whose grant is that group and
+uses it for this checkout only (the old key is kept in `.oak/` and put back
+by `--clear`). You then see and change exactly what the group can; merging
+and approving still take your own credentials. It refuses in a checkout of
+the whole repo when the group can't read all of it: switch in a
+`--path` clone instead. `oak team` is the old name of `oak group` and
+still works; JSON from `oak group` is `schema_version` 2 (`group`/`groups`
+keys).
+
+A repo's **path rules** live on the server as ownership boundaries: a
+directory, the group that owns it, an approval setting (`required`,
+`advisory` or `off`), whether owners may approve their own branch, and who
+may read and write it (`readers`/`writers`; `null` means everyone who can
+read the repo, or the directory). A path belongs to the deepest boundary
+covering it. Access only narrows going down: you read a path only if every
+boundary above it lets you. These commands always ask the server, with your
+credentials, and a boundary over a directory you can't read isn't listed:
+
+```bash
+oak access --json                         # every boundary you can see (--repo OWNER/NAME: no checkout)
+oak owners apps/web/src/app.ts --json     # the deepest boundary covering a path
+oak owners --branch --json                # what the current branch touches, with approval state
+```
+
+Path rules are shown and edited on the folders in the repo's file list on
+the web (a badge on each folder that has one), or over the API, never in a
+commit. Principals are `@group/name`, `@name` for one person, `*` for every
+repo reader and `@public` for anyone; `@team/name` still reads as
+`@group/name`.
+
+### Impact: what a branch touches
+
+`oak owners --branch --json` is read-only. From the branch's changes
+(committed since the fork point, plus uncommitted work) it reports
+`touched_boundaries` (`path`, `owner_team` (the owner group), `approval`, `approvers`,
+`changed_files`, `approved`), `approvals_enforced`, `missing_approvals`
+(boundary paths) and `hidden_missing_approvals` (ones you can't see, never
+named). The same `impact` block rides on `oak finish --json`,
+`oak mount finish --json` and `oak merge --json`. It is absent in repos
+without boundaries.
+
+### Approvals
+
+Where a touched boundary's approval is `required`, a merge needs an approval
+from its owner group, from someone who didn't work on the branch (unless the
+boundary allows `self_approve`). `advisory` boundaries show an approval is
+wanted but don't block; `off` ones say nothing. Pushing keeps an approval as
+long as the branch's changes inside that boundary are unchanged.
+
+`oak merge` is refused with exit 1 and code `approvals_required`, carrying
+`missing_approvals` (`path`, `owner_team` (the owner group), `approvers`). `--wait` doesn't
+wait: nothing but an approval clears it. Who may force past it is a repo setting (Settings → Access): by default
+an org admin, on the branch page only, so `oak merge --force` doesn't. It can
+also allow an org admin's own credentials, or no one. A force is audited.
+
+```bash
+oak approve feature --path apps/web --json   # one boundary
+oak approve feature --json                   # every touched boundary you may
+oak approve --repo acme/mono --branch feature --json   # no checkout
+```
+
+An approval comes from a person: the branch page, or an API key created with
+the `Review` scope under Settings → API keys (`OAK_API_KEY=<key> oak approve`).
+`oak login` tokens, ordinary keys and service accounts are refused with
+`review_key_required`. **Agents: never approve.** Report who needs to.
+
+### Partial checkouts (views)
+
+`oak clone ORG/REPO --path DIR` (repeatable or comma-separated) against a
+server with boundaries for the repo gives a **view**: those directories plus
+the spine `AGENTS.md`/`CLAUDE.md` files, and nothing else on disk or on the
+wire. The checkout records the view and every later command (pull, push,
+merge, `oak ls --remote`, …) sends it, so commits stay view commits locally
+while the server lands full commits that keep everything outside the view
+intact. Elsewhere `--path` makes an ordinary sparse cone (see below).
+
+```bash
+oak clone acme/mono --path apps/web --path libs/ui
+oak mount acme/mono --path apps/web --path libs/ui ./task   # the same as a lazy mount
+oak sparse show --json            # in a view: include/exclude prefixes, spine files
+oak sparse add libs/shared        # widen
+oak sparse remove apps/web/legacy # narrow; part of an included dir becomes an exclude
+```
+
+Prefer **one checkout holding every directory the task touches** (one mount,
+one branch, one merge, one CI evaluation) over several.
+
+Changing a view's directories changes every commit hash, so it re-acquires
+the checkout (a clone of the same repo and branch next to it, reusing local
+content) and moves the working tree over. It **refuses** while there are
+uncommitted or untracked files (exit 4) or commits the server doesn't have —
+commit and `oak push` first. `oak sparse disable` refuses in a view: clone the
+repo without `--path` for a full checkout.
+
+### path_outside_view
+
+A file written outside a view can't be committed: `oak commit` (and
+`oak commit` in a partial mount) exits 4 with error code `path_outside_view`,
+an `outside_view` block (`paths`) and `recommended_next_commands` such as
+`oak sparse add libs/ui`. Run those; don't work around it by recreating
+files elsewhere. Build errors about a missing sibling directory are the same
+signal.
+
+### Moving a repo into another
+
+`oak repo move acme/web --into acme/mono:apps/web --owner-group web` asks the
+server to replay `acme/web`'s history into that directory, archive the
+source and give the directory a path rule owned by the group (org owners and
+admins; with the default force policy the start has to come from the web, and
+`--dry-run` shows the plan). An old checkout of the moved repo can carry its
+work over with `oak repo adopt`: it clones the new location beside it,
+commits this branch's changes there as one commit and leaves dirty files
+dirty. A file changed on both sides lands as `<file>.adopted` and the command
+exits 5.
+
+### Peeking at the remote without widening your checkout
+
+To decide whether you need another directory at all, read it on the server.
+These are read-only, permission-filtered (a path you can't read is simply
+absent) and never change refs, the cone or the working tree:
+
+```bash
+oak ls --remote libs/auth --json            # a directory at main (--rev BRANCH|HASH)
+oak cat --remote libs/auth/README.md        # one file, hash-verified against the pinned commit
+oak grep --remote "fn verify" --json -- libs/auth  # server-side search of main; -E regex, --case-sensitive
+```
+
+`oak grep --remote` exits 1 when nothing matches. Listings and search
+results are redacted by the server, not hash-verified (`verified: false`);
+`oak cat --remote` bytes are verified.
+
+## Roots
+
+A root is a separate timeline inside the same repo, with its own head and no
+branches or CI. It starts empty, or from a commit on `main`'s first-parent
+history, which is how you keep a release line that takes patches apart from
+`main`. A root has an optional owner group (without one, only the org's owners
+and admins push to it) and a write mode (`direct` or `sync`). It needs the
+server's repo-scoped `roots` flag. Root commits never show up on `main` or its
+branches.
+
+### oak root SUBCOMMAND [--repo ORG/REPO] [-r URL] [--json]
+```bash
+oak root list [--archived] --json        # roots you can see
+oak root show ~stable --json             # owner_group, write_mode, base_commit, head, access
+oak root create notes                    # an empty root
+oak root create stable --from main --owner-group release   # start at main's head
+oak root create hotfix --from FULL_HASH  # start at an older main commit
+oak root create scratch --sync           # a sync root instead of a direct one
+oak root archive ~stable --yes           # read-only from now on
+oak root pull stable [--dir PATH] [--json]   # its files into roots/stable/
+oak root push stable [--json]            # that directory as one commit on the root
+```
+`list`/`show`/`create`/`archive` print the server's JSON unchanged with
+`--json`. Inside a root directory (it has a `.oakroot` file) `pull` and `push`
+need no root name; elsewhere they need one (exit `2` without it).
+
+- `--from` takes `main` or a full 64-character hash; the server refuses a
+  commit that isn't on `main`'s first-parent history (`invalid_base_commit`).
+- A root started from `main` begins with that commit, whose parent is on
+  `main`, outside the root; pull treats it as the start of the root's history.
+  The root holds `main`'s whole tree at that commit, so reading it takes being
+  able to read every path of the repo: others see it with `access:
+  "metadata"`, no `head`, and get a 403 on pull.
+- The checkout ignores every directory a root was pulled into (listed in
+  `.oak/root-dirs`), so `roots/NAME/` is never committed to `main`.
+- `pull` is three-way per file: files you didn't touch take the root's
+  version, files only you changed are kept, and a file changed on both sides
+  refuses the whole pull (exit `5`, `error.code: "root_conflict"`,
+  `conflict_paths`) until you move your copy aside or pass `--force` to take
+  the root's.
+- `push` sends only blobs the root's head doesn't have (4 MiB per file,
+  64 MiB per push for now), so a patch on a release line doesn't send
+  `main`'s files again. If someone pushed since your last pull it exits `5`
+  with `error.code: "head_moved"`: run `oak root pull` (your edits are kept),
+  then push again. A directory never pulled can't push to a root that already
+  has commits, a root from `main` included (`pull_required`, exit `5`).
+- Server errors exit `6` with the server's message; a root you can't see is
+  a 404.
+
+## Sites
+
+### oak site SUBCOMMAND [--repo ORG/REPO] [-r URL] [--json]
+Oak Pages: static sites served at `https://NAME.oak.page/` from a folder of a
+repo's `main` branch. Names are globally unique DNS labels (lowercase letters,
+digits, inner `-`, max 63, no `--` at characters 3-4); one repo can have many
+sites. The repo defaults to the current checkout's. `--json` prints the
+server's JSON unchanged.
+
+```bash
+oak site check docs                       # is the name free? (exit 1 when taken)
+oak site create docs --dir public --spa   # prints https://docs.oak.page/
+oak site list [--org ORG]                 # this repo's sites, or an organization's
+oak site show docs
+oak site set docs --dir site --no-spa
+oak site set docs --password-user ann --password-file pw.txt   # or --no-password
+oak site rename docs handbook
+oak site deploys docs
+oak site redeploy docs                    # exit 1 if the deploy fails
+oak site rollback docs [--to ID]
+oak site rm docs --yes
+oak open --site docs                      # open https://docs.oak.page/
+```
+
+Custom domains: a site can also answer on domains the org owns. `add` prints
+two DNS records: a TXT record at `_oak-pages.DOMAIN` that proves ownership
+(keep it; the server re-checks daily and drops a domain whose record has been
+gone a week) and a CNAME to `domains.oak.page` (ALIAS/flattened CNAME for an
+apex). `verify` exits `1` until the TXT record is visible. Making a domain
+primary redirects the site's other addresses to it. Org owner/admin only; up
+to 5 per site.
+
+```bash
+oak site domain add docs docs.example.com      # prints the TXT + CNAME records
+oak site domain verify docs docs.example.com   # exit 1 while the TXT record is missing
+oak site domain list docs [--json]             # state, records, live DNS
+oak site domain primary docs docs.example.com  # --off to stop redirecting
+oak site domain rm docs docs.example.com --yes
+```
+
+Server errors exit `6` with the server's message; bad names exit `2`.
+
+## Retention
+
+A repo can keep only the newest versions of the files under a directory
+(the server's `retention` flag). Older versions keep their commits, trees
+and history, so every hash still verifies, but the server stops serving
+their content and later reclaims the storage. Content that a branch head, a
+release, or a file outside the rule still uses is always kept, so the
+current tree is never affected.
+
+### oak retention [list|set|remove] [--repo ORG/REPO] [-r URL] [--json]
+```bash
+oak retention --json                       # the rules, what they expired, can_edit
+oak retention set build/out --keep 3       # newest 3 versions of each file under build/out/
+oak retention set / --keep 50              # a whole-repo rule; the deepest matching rule wins
+oak retention remove build/out             # expired versions come back unless already reclaimed
+```
+Changing a rule needs an owner or admin of the repo's organization. Rules
+take effect on the server's next retention run (a change queues one).
+
+### Expired versions in clone, pull and diff
+Pull and clone send `retention_protocol=expired_v1`, and the server lists
+expired versions in `missing_content` with reason `retention_expired`. Oak
+records them with the known-lost content: clone and pull skip them and warn
+`N historical file version(s) are no longer stored on the server ...`,
+`oak switch`/`oak restore --source` to an old commit skip those files, and
+`oak diff` against such a version says the server no longer stores it.
+This is policy, not damage: don't `oak pull --force`, `oak doctor` or
+re-clone to "fix" it. Older Oak versions get an HTTP 409 asking them to
+upgrade (or to clone `--shallow`) when history they need has expired.
+
+## Repo health
+
+### oak doctor --repo ORG/REPO [-r URL] --verify metadata [--json]
+Inspect remote commit/tree/blob/mapping integrity. `--verify metadata` is the
+cheap structural mode. Physical `existence`/`bytes` modes require login;
+`--verify bytes` additionally requires `--depth` and an explicit
+`--max-chunks` or `--max-bytes`. JSON may include non-fatal operator
+`advisories` for safely readable legacy trees above current write policy.
+JSON adds `outcome`: `verified` (exit 0), `failed` (exit 6), or `inconclusive`
+(exit 8 — the proof ran out of budget; narrow it with `--depth N`).
+
+### oak blob info HASH --repo ORG/REPO [-r URL] [--depth N [--branch NAME]] [--json]
+Platform-admin, target-only byte evidence. It is deliberately bounded at
+100,000 chunks / 256 MiB and reports truncation instead of adding an unbounded
+bypass; unrelated reachable blobs do not consume the target byte budget.
+Target history is bounded by the server's advertised profile (modern servers
+cover up to 100,000 reachable commits). If an older server's smaller history
+window is the only truncation, the command succeeds and prints the proven
+scope; pass `--depth N` (and optionally `--branch NAME`) to choose an explicit
+bounded primary-chain scope.
+
+## More
+
+### oak export DEST [-b BRANCH] [--git-branch NAME] [-f]
+Replay the branch's linear history into a fresh **git** repo, preserving
+author + timestamp. The documented escape hatch off Oak.
+
+### oak export --tree-only --at HEAD|FULL_HASH DEST [--json] [--max-files N] [--max-bytes B]
+Materialize exactly one pinned tree — no history replay, no git, no `.oak`.
+DEST must be absent or an empty directory. Files are hash-verified and written
+to a private staging directory beside DEST (symlinks last; case/Unicode path
+collisions abort), which is renamed into place only when the whole tree
+verified within budget; otherwise nothing is published and the command exits 1
+(`materialized: false`, with the status/truncation that stopped it). Files are
+streamed (memory stays flat regardless of file size), and durability comes from
+one barrier before the rename (`durability: "synced_before_publish"` on Linux
+and macOS, `not_synced` elsewhere) rather than a flush per file. A staging
+directory `.<DEST>.oak-export-<pid>-XXXX` left by an interrupted export is
+removed by the next export to the same DEST once its process is gone
+(`stale_staging_removed`).
+
+### oak environment [--json]  (alias: oak env)
+Every environment variable Oak itself reads plus the known dependency-honored
+ones (`read_by: "dependency"`: `HTTP(S)_PROXY`, `ALL_PROXY`, `NO_PROXY` and
+lowercase forms, `HOME`, `TMPDIR`), whether each is set, and its effective
+value (secrets such as `OAK_API_KEY` as presence only; URLs and URL lists with
+userinfo/query stripped), plus background network behaviour: the once-per-24h update check
+(endpoint, 2 s timeout, when it is skipped, last check). Local only.
+
+### oak archive [-o OUTPUT]
+Zip archive of the tree.
+
+### oak open [--site NAME] [--print|--json]
+Open the repo on the server in a browser, or with `--site NAME` the Oak
+Pages site at `https://NAME.oak.page/` (JSON `target: "pages_site"`).
+
+### oak feedback [-m TEXT|--file FILE]
+Send feedback to the Oak team. Non-interactive callers must pass `-m` or
+`--file` (`-` for stdin); otherwise the command exits 2. The
+`feature-request` alias, optional attribution flags, and submit JSON
+`{"id", "ref", "status"}` remain unchanged.
+
+### oak feedback list / oak feedback show ITEM
+
+Read the platform-admin feedback queue with reporter metadata omitted.
+`list --status nonterminal --limit 50 --json` returns one bounded page;
+use its `recommended_next_commands` or pass `--cursor` for the next page.
+`--status all` includes terminal tickets; an exact lifecycle status filters
+to that state. Limits are 1–100. `show fb-165 --json` reads one report directly.
+Both commands accept `--remote` and `--json` before or after the subcommand;
+the child remote wins. Credentials follow the same isolation as link/unlink.
+With `--json`, failures emit one standard `schema_version: 1` error envelope
+on stdout; human failures use stderr. Exit codes remain 1 for remote errors
+and 2 for usage errors.
+
+Responses identify `platform_admin` scope and `live_keyset` consistency:
+new insertions do not shift page offsets, but status edits may change
+membership. This is not a snapshot or an incremental change feed;
+`updated_since` is intentionally unsupported. Contact/identity and internal
+metadata are omitted; authored report text can still contain private data.
+An old-server or unauthorized 404 is explicit and never falls back to the
+unbounded export. This requires the server inventory API to be deployed;
+releasing the CLI alone does not activate it.
+
+Newer inventory responses include an opaque per-ticket `revision`; older
+responses may omit it. `show` also prints it in human output when available.
+
+### oak feedback transition ITEM
+
+Platform-admin conditional edit, never a legacy PATCH fallback:
+
+```bash
+oak feedback show fb-165 --json
+oak feedback transition fb-165 --expected-revision TOKEN --status in_progress --json
+oak feedback transition fb-165 --expected-revision TOKEN --notes "Investigating" --json
+oak feedback transition fb-165 --expected-revision TOKEN --clear-notes --json
+```
+
+At least one edit is required. Status and notes may be edited together;
+omitted fields are preserved. `--notes` conflicts with `--clear-notes`;
+empty notes also clear them. Notes allow 20,000 Unicode characters without
+NUL; revision tokens allow 128 bytes without control characters. The ten
+lifecycle statuses are unchanged (`nonterminal`/`all` are list filters only).
+`--remote` and `--json` work before or after the subcommand, child values win.
+
+The command requires schema1 and numeric `feedback_transition_v1: 1` from
+the server capability endpoint. An omitted field (the server's disabled
+response) or numeric zero means unavailable, not malformed. Unknown schema or
+protocol versions are unsupported; invalid JSON or wrong field types are invalid.
+Unsupported/disabled/unauthorized/malformed capabilities cause no mutation.
+Use the authorized feedback web interface while unavailable, or ask the server
+operator about rollout; the CLI does not activate this feature.
+Resolution uses bounded redacted detail,
+never the legacy private export. Credentials remain scoped to that remote;
+redirects are not followed. Reads and mutation responses have 30-second
+request deadlines; capability/receipt bodies are capped at1MiB, detail at4MiB.
+
+The exact caller-supplied token is sent even if the detail lookup observes
+a newer revision. Success JSON contains `confirmed`, `changed`, feedback ID/ref,
+status, previous/new revision, schema and protocol—not notes or reporter fields.
+A no-op confirms unchanged state without inventing a new revision. Receipts
+must match the requested ticket, token and edits before success is printed.
+
+With `--json`, failures produce the standard `schema_version: 1` error envelope
+with `error.code`, `message`, and read-only `recommended_next_commands`.
+`error.feedback_transition` adds `transition_sent` and `outcome`: `not_sent`
+before any mutation attempt, `rejected` after a definite rejection, or
+`unconfirmed` when a sent request may have committed. `transition_sent: true`
+means dispatch was attempted, not proof of delivery. Omitted/zero capability
+uses code `feedback_transition_unavailable`; endpoint absence/access denial,
+unsupported versions, and invalid responses have distinct capability codes.
+Do not infer a safe replay from a nonzero exit code.
+
+412 `revision_conflict` requires refresh and reconciliation. A transport error,
+5xx, interrupted/oversized/malformed success or inconsistent receipt is
+`UNCONFIRMED`: it may have committed. Neither case is automatically retried;
+never blindly substitute a refreshed token. The command prints the exact
+read-only refresh invocation. Exit codes are0 confirmed,1 remote/unconfirmed
+failure,2 invalid arguments or missing credentials. CLI release does not
+activate the globally gated server feature. No batch or incremental feed is implied.
+
+### oak feedback link ITEM / oak feedback unlink ITEM
+
+Admin-only manual links between a feedback item and a branch or commit.
+`ITEM` is `fb-165`, `165`, or its raw id.
+
+```bash
+oak feedback link fb-165                         # current repo and branch
+oak feedback link fb-165 --commit HASH            # commit-only link
+oak feedback link fb-165 --branch NAME --commit HASH
+oak feedback unlink fb-165 --link-id ID           # unambiguous row
+oak feedback unlink fb-165 --commit HASH
+oak feedback unlink fb-165 --branch NAME
+```
+
+- `--repo ORG/REPO` defaults to the current checkout's repository.
+- `link --commit` without `--branch` does not infer the current branch.
+- `unlink` accepts only one of `--link-id`, `--commit`, or `--branch`.
+  With no selector it uses the current branch. `--link-id` needs no repo;
+  commit matching includes branch-plus-commit links. Ambiguity deletes
+  nothing and lists exact link IDs to choose from.
+- `--remote URL` and `--json` work before or after `link`/`unlink`.
+  Child `--remote` takes precedence if both positions are supplied.
+- JSON schema v1 includes `status`, `feedback_id`, optional `feedback_ref`,
+  `link` (or `removed` and `removed_link_id`), and
+  `recommended_next_commands`. Unknown link fields and optional `source`
+  are preserved. A link's undo recommendation names its exact link ID.
+  Undo/relink recommendations and ambiguity commands retain the effective
+  remote, so an override cannot silently revert to the checkout origin.
+  Every argument is POSIX-shell quoted when needed; response-derived names
+  are data, never executable shell syntax. Parse-failure diagnostics do not
+  include response values (including serde type-error excerpts).
+
+Credentials are explicit `OAK_API_KEY`, then the login saved for the effective
+remote, never a checkout repository key or another server's login. Missing
+credentials fail before network access. URL userinfo, query, and fragment
+are stripped before lookup or network use; URL basic-auth is not supported.
+
+Number lookup requires the updated server's `GET /api/feedback?status=all`
+so spam-marked items remain addressable. Older servers rejecting that query
+fail clearly before any write; there is no incomplete default-list fallback.
+A raw item ID bypasses number lookup, but link/unlink still requires the
+deployed admin feedback-links API. This command does not activate rollout
+flags or prove that production has deployed that API.
+
+Exit codes follow feedback's narrow contract: 0 success, 1 server/network or
+ambiguity, 2 usage. With `--json`, failures emit one standard error envelope
+on stdout; human failures use stderr. Link/unlink errors do not claim whether
+a remote mutation committed; remote failures set `retryable: false` and do
+not prescribe an automatic retry. The
+anonymous-capable feedback submission command retains its separate reporting.
+
+### oak completions SHELL / oak upgrade [-f] [--channel stable|nightly | --canary]
+Shell completions; self-upgrade. `oak upgrade` follows the saved update
+channel (stable by default). `--channel nightly` switches to the daily build of
+the tip of `main` and remembers it for later upgrades and the daily notice;
+`--channel stable` switches back. `--canary` installs the current nightly build
+once without changing the channel. Every channel downloads from oak.space
+(`OAK_URL`). On macOS an installed Oak Mount app is updated too, unless a mount
+is live; rerun after unmounting. `oak environment --json` reports the channel
+(`background_network.update_check.channel`) and a nightly binary's
+`oak_build_channel` / `oak_build_id`.
+
+Mount commands: see [mounts.md](mounts.md).
+CI commands: see [ci-and-merging.md](ci-and-merging.md).
+
+## MCP server
+
+`oak mcp` serves Oak's read tools over stdio to an MCP client, run from the
+repo. `oak mcp --allow-write` adds `oak_commit`, `oak_desc` and `oak_push`.
+Merging and closing are not exposed. Use the CLI when you have a shell: the
+tools wrap the same `--json` commands.
+
+

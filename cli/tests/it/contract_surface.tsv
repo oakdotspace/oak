@@ -1,0 +1,149 @@
+# The oak command surface for the machine contract. One line per runnable command:
+# <command path> TAB <json|exempt> TAB <why an exempt command has no --json>.
+# Checked by `contract_surface_matches_the_golden_file` (cli/src/contract_tests.rs);
+# walked by cli/tests/it/contract_surface.rs. Hidden commands are marked `hidden`.
+access	json	
+agent publication forget	json	
+agent state	json	
+approve	json	
+archive	exempt	the output is the archive itself (a file or a byte stream on stdout)
+auth status	json	
+blob info	json	
+branch	json	
+branch close	json	
+branch diff	json	
+branch list	json	
+branch rename	exempt	local-only rename with no receipt yet; `oak branch --json rename` is rejected and failures still get the envelope
+branch review	json	
+branch show	json	
+branch train	json	
+branch triage	json	
+cat	json	
+change capture	json	
+change export	json	
+checkout	exempt	human shorthand; `oak switch NAME --detach --json` is the receipt form
+ci approve	json	
+ci cancel	json	
+ci logs	json	
+ci publish	json	
+ci rerun	json	
+ci runs	json	
+ci status	json	
+ci trigger	json	
+ci wait	json	
+clone	json	
+close	json	
+commit	json	
+completions	exempt	prints a shell completion script
+config get	json	
+config list	json	
+config set	json	
+config unset	json	
+conflict show	json	
+conflict status	json	
+conflict take	json	
+desc	json	
+diff	json	
+doctor	json	
+environment	json	
+export	json	
+feedback	json	
+feedback link	json	
+feedback list	json	
+feedback show	json	
+feedback transition	json	
+feedback unlink	json	
+fetch	json	
+file inspect	json	
+finish	json	
+grep	json	
+group add	json	
+group agent add	json	
+group agent list	json	
+group agent remove	json	
+group create	json	
+group grant	json	
+group invite	json	
+group list	json	
+group remove	json	
+group revoke	json	
+group show	json	
+group switch	json	
+groups	json	
+hash	exempt	prints one bare commit hash, already machine-readable
+info	json	
+init	json	
+log	json	
+login	exempt	interactive browser/device flow
+logout	exempt	interactive credential removal; no state an agent needs back
+ls	json	
+maintenance compact	exempt	manual storage maintenance with human progress output
+mcp	exempt	speaks the MCP protocol on stdio
+merge	json	
+mount	exempt	mount lifecycle receipts are a later workstream (fb-636)
+mount __fskit-broker	exempt-hidden	internal process entry point, not a user command
+mount __fskit-broker-ping	exempt-hidden	internal process entry point, not a user command
+mount __resume	exempt-hidden	internal process entry point, not a user command
+mount __serve	exempt-hidden	internal process entry point, not a user command
+mount end	exempt	mount lifecycle receipts are a later workstream (fb-636)
+mount finish	json	
+mount forget	exempt	mount lifecycle receipts are a later workstream (fb-636)
+mount list	json	
+mount worktree-create	exempt-hidden	hook protocol: stdout is exactly the worktree path
+mount worktree-remove	exempt-hidden	hook protocol: reads the hook JSON on stdin, prints nothing
+open	json	
+owners	json	
+pull	json	
+push	json	
+refs inspect	json	
+repo adopt	json	
+repo list	json	
+repo move	json	
+repo visibility	json	
+reset	json	
+restore	json	
+retention	json	
+retention list	json	
+retention remove	json	
+retention set	json	
+rev-parse	exempt	git-compatibility shim that prints one bare hash
+root archive	json	
+root create	json	
+root list	json	
+root pull	json	
+root push	json	
+root show	json	
+site check	json	
+site create	json	
+site deploys	json	
+site domain add	json	
+site domain list	json	
+site domain primary	json	
+site domain rm	json	
+site domain verify	json	
+site list	json	
+site redeploy	json	
+site rename	json	
+site rm	json	
+site rollback	json	
+site set	json	
+site show	json	
+skill install	exempt	writes skill files for a human-run setup step
+sparse	json	
+sparse add	json	
+sparse disable	json	
+sparse list	json	
+sparse remove	json	
+sparse set	json	
+split	json	
+start	json	
+status	json	
+switch	json	
+tree inspect	json	
+upgrade	exempt	self-update with human progress output
+watch	json	
+watch hook	exempt	hook protocol: stdout is the hook response
+watch start	json	
+watch status	json	
+watch stop	json	
+whoami	json	

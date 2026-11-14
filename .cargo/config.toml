@@ -1,0 +1,5 @@
+[env]
+# Debug-build clap parsing of the full `oak` command tree needs more than the
+# 2 MiB default stack of Rust test threads on Linux (the `oak` binary itself
+# parses on the 8 MiB main thread). Give test threads the same 8 MiB.
+RUST_MIN_STACK = "8388608"

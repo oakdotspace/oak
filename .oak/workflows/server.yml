@@ -1,0 +1,142 @@
+# The server's checks: the Tailwind build, script contracts, fmt, clippy, the
+# test suite (nextest, including the CLI's end-to-end tests against the
+# server) and doctests, on a Linux runner with the `oak-ci` label. Runs on main
+# after each merge; a branch can ask for a run with `oak ci trigger`.
+#
+# Every step runs in server/. Warm builds and the per-test result cache are
+# described in server/infra/ci-runner/README.md.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server/**"
+      - "core/**"
+      - "cli/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".oak/workflows/server.yml"
+      - ".oak/workflows/deploy.yml"
+  workflow_dispatch:
+defaults:
+  run:
+    working-directory: server
+env:
+  CARGO_TERM_COLOR: always
+  DATABASE_URL: postgres://oak:oak@localhost:5432/oak_ci_test
+  TEST_DATABASE_URL: postgres://oak:oak@localhost:5432/oak_ci_test
+  # Each nextest process builds its own pool; setup-postgres.sh raises
+  # max_connections to fit --test-threads times this.
+  DATABASE_MAX_CONNECTIONS: "8"
+  DATABASE_ACQUIRE_TIMEOUT_SECS: "30"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+jobs:
+  test:
+    runs-on: oak-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ hashFiles('server/Cargo.lock', 'Cargo.lock') }}
+          restore-keys: cargo-sources-
+      - name: install rust
+        run: '[ -x "$HOME/.cargo/bin/cargo" ] || command -v cargo >/dev/null 2>&1 || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none'
+      - name: install bun
+        run: '[ -x "$HOME/.bun/bin/bun" ] || command -v bun >/dev/null 2>&1 || curl -fsSL https://bun.sh/install | bash'
+      - name: runner diagnostics
+        run: 'nproc; grep -m1 "model name" /proc/cpuinfo || true; df -h .'
+      - name: warm slot
+        run: bash scripts/ci/warm-slot.sh test
+      - name: start postgres
+        run: bash scripts/ci/setup-postgres.sh
+      - name: tailwind build
+        run: cd "$OAK_CI_SRC" && bash scripts/ci/tailwind.sh
+      - name: install nextest
+        run: '. "$HOME/.cargo/env" && command -v cargo-nextest >/dev/null 2>&1 || (. "$HOME/.cargo/env" && curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "$HOME/.cargo/bin")'
+      # install.ps1's signature tests run under pwsh (OAK_PWSH below).
+      - name: install pwsh
+        run: command -v pwsh >/dev/null 2>&1 || bash scripts/ci/install-pwsh.sh
+      # The task token lets the result cache keep its passes on the server.
+      - name: test
+        run: OAK_PWSH=pwsh bash scripts/ci/test-suite.sh --test-threads=12
+        env:
+          OAK_TEST_CACHE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  lint:
+    runs-on: oak-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ hashFiles('server/Cargo.lock', 'Cargo.lock') }}
+          restore-keys: cargo-sources-
+      - name: install rust
+        run: '[ -x "$HOME/.cargo/bin/cargo" ] || command -v cargo >/dev/null 2>&1 || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none'
+      - name: install bun
+        run: '[ -x "$HOME/.bun/bin/bun" ] || command -v bun >/dev/null 2>&1 || curl -fsSL https://bun.sh/install | bash'
+      # setpriv runs the baseline suite as a fixed uid; jq and script(1) are
+      # used by the release contract.
+      - name: install script tools
+        run: 'command -v setpriv >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -v script >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends util-linux jq bsdutils && rm -rf /var/lib/apt/lists/*)'
+      - name: warm slot
+        run: bash scripts/ci/warm-slot.sh lint
+      - name: start postgres
+        run: bash scripts/ci/setup-postgres.sh
+      - name: rollout script contracts
+        run: PATH="$HOME/.bun/bin:$PATH" bash scripts/content-publication-rollout-preflight.sh --self-test && PATH="$HOME/.bun/bin:$PATH" bash scripts/tests/content-publication-rollout-preflight.sh && PATH="$HOME/.bun/bin:$PATH" bash scripts/tests/feedback-lifecycle-canary.sh && PATH="$HOME/.bun/bin:$PATH" bash scripts/tests/server-channel.sh && bash scripts/tests/oak-release.sh
+      - name: legacy baseline root source trust
+        run: bash scripts/tests/legacy-baseline.sh --root-source-trust
+      - name: legacy baseline state machine
+        run: setpriv --reuid=65534 --regid=65534 --clear-groups bash scripts/tests/legacy-baseline.sh
+      - name: protected staging security contracts
+        run: bash scripts/tests/protected-staging.sh
+      - name: box setup contract
+        run: bash scripts/tests/oak-box-setup.sh
+      - name: warm slot contract
+        run: bash scripts/tests/warm-slot.sh
+      - name: paths named in workflows and docs exist
+        run: bash scripts/tests/repo-paths.sh
+      - name: alert triage worker
+        run: PATH="$HOME/.bun/bin:$PATH" bun test infra/alert-triage
+      # Parses every shipped JS asset and inline <script>.
+      - name: shipped javascript
+        run: PATH="$HOME/.bun/bin:$PATH" bun test crates/oak-web/js-tests
+      - name: fmt
+        run: . "$HOME/.cargo/env" && cargo fmt --all -- --check
+      - name: clippy
+        run: . "$HOME/.cargo/env" && bash scripts/ci/slot-check.sh && cd "$OAK_CI_SRC" && cargo clippy --workspace --all-targets -- -D warnings
+      # The workspace build turns on oak-core features the shipped binary
+      # doesn't have (the CLI tests pull in the full CLI); build the binary
+      # alone too, with exactly the features it ships with.
+      - name: shipped build
+        run: . "$HOME/.cargo/env" && bash scripts/ci/slot-check.sh && cd "$OAK_CI_SRC" && cargo check -p oak-web --bin oak-web-server
+      # nextest doesn't run doctests.
+      - name: doctests
+        run: . "$HOME/.cargo/env" && bash scripts/ci/slot-check.sh && cd "$OAK_CI_SRC" && cargo test --workspace --doc
+  # Rebuilds the per-test coverage map the result cache keys tests by, at most
+  # once a day.
+  test-map:
+    if: github.event_name == 'push'
+    runs-on: oak-ci
+    steps:
+      - uses: actions/checkout@v4
+      - name: map due?
+        run: 'if bash scripts/ci/test-map.sh --check; then echo OAK_MAP_DUE=1 >> "$GITHUB_ENV"; fi'
+      - name: warm slot
+        if: env.OAK_MAP_DUE == '1'
+        run: bash scripts/ci/warm-slot.sh map
+      - name: start postgres
+        if: env.OAK_MAP_DUE == '1'
+        run: bash scripts/ci/setup-postgres.sh
+      - name: tailwind build
+        if: env.OAK_MAP_DUE == '1'
+        run: cd "$OAK_CI_SRC" && bash scripts/ci/tailwind.sh
+      - name: coverage map
+        if: env.OAK_MAP_DUE == '1'
+        run: OAK_PWSH=pwsh bash scripts/ci/test-map.sh --test-threads=8

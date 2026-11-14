@@ -1,0 +1,147 @@
+# Build, sign, and publish a stable `oak` release on Oak's own macOS release
+# runner: every CLI target, the notarized OakMount app, minisign signatures,
+# the repo's own Oak release (the tag vX.Y.Z on oak/oak, with every asset), and
+# oak.space staging + promotion. The native-CI counterpart of
+# .github/workflows/release-staging.yml, publishing to Oak releases instead of
+# GitHub Releases; it replaces release-macos.yml, which built and signed only
+# the darwin pair.
+#
+# One job on one machine, because an environment workflow has exactly one job
+# and native CI can't hand artifacts between jobs. The steps are phases of
+# scripts/release-oak-ci.sh; its header documents each one, the dry-run
+# rules, and the key hygiene. In short: darwin builds natively, Linux in a
+# container on the runner's Docker (fuser needs a Linux host), Windows with
+# cargo-xwin, and the app with Xcode.
+#
+# Trigger: a deploy to this repo's `production` environment, at an exact head
+# someone approved (never a push or an ordinary trigger):
+#   oak ci deploy --environment production --workflow release
+# (or Settings → Environments → Deploy). Deploying `main` publishes; set the
+# environment variable RELEASE_DRY_RUN=true (or deploy another branch the
+# environment allows) to build and sign without publishing. Signed runs of
+# main also land in the runner's outbox (see the deliver phase).
+#
+# Runner: host-mode, carrying `macos` and `arm64`, bound to `production`.
+# scripts/release-runner-setup.sh installs what it needs (Xcode, rustup,
+# colima + docker, cargo-xwin + llvm, minisign, jq, xcodegen) and registers
+# it; the release steps also run the runner's own `oak` CLI.
+# docs/release-on-oak-ci.md is the runbook.
+#
+# Secrets (in the `production` environment, never ordinary CI secrets):
+#   OAK_RELEASE_API_KEY          oak.space API key with write access to
+#                                OAK_REPO: creates and publishes the release
+#   OAK_ADMIN_API_KEY            oak.space release staging/promote
+#   MINISIGN_SECKEY, MINISIGN_PASSWORD
+#   MACOS_CERT_P12_BASE64, MACOS_CERT_PASSWORD, MACOS_KEYCHAIN_PASSWORD
+#   MACOS_SIGN_IDENTITY          optional cross-check of the derived identity
+#   MACOS_HOST_PROFILE_BASE64, MACOS_EXT_PROFILE_BASE64
+#   MACOS_NOTARY_KEY_BASE64, MACOS_NOTARY_KEY_ID, MACOS_NOTARY_ISSUER_ID
+# Variables (optional): RELEASE_DRY_RUN, RELEASE_VERSION, OAK_URL, OAK_REPO,
+# OAK_BIN, RELEASE_OUTBOX.
+#
+# Each secret is mapped into only the step that uses it. The build steps have
+# none, and no secret exists on the machine while cargo runs.
+on: [workflow_dispatch]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: [macos, arm64]
+    environment: production
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The same fetch actions/checkout performs, inline: the job's task token
+      # (GITHUB_TOKEN) authenticates it, and it only works while this job runs.
+      - name: checkout
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c "http.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --no-tags --no-recurse-submodules --depth=1 origin "+$GITHUB_SHA:refs/remotes/origin/main"
+          git checkout -q --force --detach "$GITHUB_SHA"
+
+      - name: prepare
+        run: bash scripts/release-oak-ci.sh prepare >> "$GITHUB_ENV"
+
+      # Reads both channels' state to pick the release mode before anything is
+      # built. The other secrets are only checked for presence.
+      - name: preflight
+        env:
+          OAK_API_KEY: ${{ secrets.OAK_RELEASE_API_KEY }}
+          OAK_ADMIN_API_KEY: ${{ secrets.OAK_ADMIN_API_KEY }}
+          HAS_MINISIGN_SECKEY: ${{ secrets.MINISIGN_SECKEY != '' }}
+          HAS_MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
+          HAS_MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD != '' }}
+          HAS_MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD != '' }}
+          HAS_MACOS_HOST_PROFILE_BASE64: ${{ secrets.MACOS_HOST_PROFILE_BASE64 != '' }}
+          HAS_MACOS_EXT_PROFILE_BASE64: ${{ secrets.MACOS_EXT_PROFILE_BASE64 != '' }}
+          HAS_MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 != '' }}
+          HAS_MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID != '' }}
+          HAS_MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID != '' }}
+        run: bash scripts/release-oak-ci.sh preflight
+
+      # No secret in these three: crate build scripts and proc macros run here.
+      - name: build darwin
+        run: bash scripts/release-oak-ci.sh build-macos
+
+      - name: build linux
+        run: bash scripts/release-oak-ci.sh build-linux
+
+      - name: build windows
+        run: bash scripts/release-oak-ci.sh build-windows
+
+      - name: sign darwin
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: bash scripts/release-oak-ci.sh sign-macos
+
+      # Xcode signs while it builds, so the keychain is still there; the app
+      # has no build scripts or packages, and nothing here runs cargo.
+      - name: build app
+        env:
+          MACOS_HOST_PROFILE_BASE64: ${{ secrets.MACOS_HOST_PROFILE_BASE64 }}
+          MACOS_EXT_PROFILE_BASE64: ${{ secrets.MACOS_EXT_PROFILE_BASE64 }}
+        run: bash scripts/release-oak-ci.sh build-app
+
+      # Straight after the last use, and whatever happened: the key must not
+      # outlive the steps that need it.
+      - name: remove signing keychain
+        if: always()
+        run: bash scripts/release-oak-ci.sh remove-keychain
+
+      - name: notarize app
+        env:
+          MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: bash scripts/release-oak-ci.sh notarize
+
+      - name: verify
+        run: bash scripts/release-oak-ci.sh verify
+
+      - name: minisign
+        env:
+          MINISIGN_SECKEY: ${{ secrets.MINISIGN_SECKEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: bash scripts/release-oak-ci.sh sign
+
+      - name: deliver
+        run: bash scripts/release-oak-ci.sh deliver
+
+      - name: publish
+        env:
+          OAK_API_KEY: ${{ secrets.OAK_RELEASE_API_KEY }}
+          OAK_ADMIN_API_KEY: ${{ secrets.OAK_ADMIN_API_KEY }}
+        run: bash scripts/release-oak-ci.sh publish

@@ -1,0 +1,131 @@
+# Publish the library and CLI to crates.io on Oak's own macOS release runner:
+# `oakvcs-core`, then `oakvcs-cli`. The native-CI replacement for GitHub's
+# publish-crates.yml.
+#
+# This is separate from release.yml, which ships signed binaries to oak.space
+# (what `oak upgrade` resolves) and the repo's Oak release. This workflow ships the
+# source crates (`cargo install oakvcs-cli`, and library consumers such as the
+# server depending on `oakvcs-core`). It never writes to the repo: bump
+# [workspace.package].version and the oak-core dependency version in
+# Cargo.toml, merge to `main`, then deploy.
+#
+# Trigger: a deploy to this repo's `production` environment, at an exact head
+# someone approved:
+#   oak ci deploy --environment production --workflow publish-crates
+# Deploying `main` publishes. Set the environment variable
+# CRATES_DRY_RUN=true (or deploy another branch the environment allows) to
+# verify and package without uploading.
+#
+# Ordering: oakvcs-cli depends on oakvcs-core by version, and its publish
+# verify-build resolves oakvcs-core from the crates.io index, not the local
+# path. So core is uploaded first, and `cargo publish` blocks until the index
+# shows it before the CLI is verified. A dry run can't verify the CLI that way
+# (core's new version isn't on the index), so it builds the CLI against the
+# path dependency instead.
+#
+# Key hygiene, as in release.yml: every build runs in a step with no secret.
+# The token is mapped only into the two upload steps, which pass --no-verify
+# so nothing is compiled while it is in the environment: core was verified by
+# the step before, and the CLI by the step between the uploads.
+#
+# Runner: the release runner (host mode, `macos` + `arm64`), already bound to
+# `production`. docs/release-on-oak-ci.md is the runbook.
+#
+# Secret (in the `production` environment, never an ordinary CI secret):
+#   CARGO_REGISTRY_TOKEN   crates.io token, publish-update on oakvcs-core and
+#                          oakvcs-cli
+# Variable (optional): CRATES_DRY_RUN.
+on: [workflow_dispatch]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: [macos, arm64]
+    environment: production
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The same fetch actions/checkout performs, inline: the job's task token
+      # (GITHUB_TOKEN) authenticates it, and it only works while this job runs.
+      - name: checkout
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c "http.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --no-tags --no-recurse-submodules --depth=1 origin "+$GITHUB_SHA:refs/remotes/origin/main"
+          git checkout -q --force --detach "$GITHUB_SHA"
+
+      # rust-toolchain.toml names the channel. CARGO_HOME is per job, so no
+      # credential or registry state outlives the run on this persistent host.
+      - name: prepare
+        run: |
+          set -euo pipefail
+          scratch="${RUNNER_TEMP:-}"
+          [ -n "$scratch" ] || scratch="$(mktemp -d)"
+          rustup toolchain install >&2
+          rustc --version >&2
+          echo "CARGO_HOME=$scratch/cargo-home" >> "$GITHUB_ENV"
+          if [ "${CRATES_DRY_RUN:-false}" = "true" ] || [ "${OAK_CI_BRANCH:-}" != "main" ]; then
+            echo "CRATES_PUBLISH=false" >> "$GITHUB_ENV"
+            echo "Dry run (CRATES_DRY_RUN=${CRATES_DRY_RUN:-unset}, branch ${OAK_CI_BRANCH:-unset}): verify and package only; nothing is uploaded."
+          else
+            echo "CRATES_PUBLISH=true" >> "$GITHUB_ENV"
+          fi
+
+      # The oak-core dependency version must equal [workspace.package].version,
+      # or the CLI would require a stale oakvcs-core off the index.
+      - name: version
+        run: |
+          set -euo pipefail
+          version="$(awk '/^\[workspace.package\]/{f=1} f&&/^version *=/{gsub(/[" ]/,"");split($0,a,"=");print a[2];exit}' Cargo.toml)"
+          dep="$(sed -n 's/^oak-core *=.*version *= *"\([^"]*\)".*/\1/p' Cargo.toml)"
+          [ "$dep" = "$version" ] || { echo "error: [workspace.dependencies] oak-core is $dep, but the workspace version is $version." >&2; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "Publishing oakvcs-core and oakvcs-cli $version"
+
+      - name: verify core
+        run: cargo publish -p oakvcs-core --dry-run --locked
+
+      # Rerunning after the CLI upload failed must not try core again. Ask the
+      # crates.io API: `cargo info` inside the workspace finds the local ./core
+      # member and always "succeeds". (crates.io refuses curl's default
+      # User-Agent.)
+      - name: upload core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ "$CRATES_PUBLISH" = true ] || { echo "Dry run: core not uploaded."; exit 0; }
+          [ -n "${CARGO_REGISTRY_TOKEN:-}" ] || { echo "error: add CARGO_REGISTRY_TOKEN in Settings -> Environments -> production, or set CRATES_DRY_RUN=true." >&2; exit 1; }
+          if curl -fsSL -A "oak-publish-workflow (https://oak.space)" \
+              "https://crates.io/api/v1/crates/oakvcs-core/$VERSION" >/dev/null 2>&1; then
+            echo "oakvcs-core $VERSION is already on crates.io; skipping."
+          else
+            cargo publish -p oakvcs-core --no-verify --locked
+          fi
+
+      - name: verify cli
+        run: |
+          set -euo pipefail
+          if [ "$CRATES_PUBLISH" = true ]; then
+            cargo publish -p oakvcs-cli --dry-run --locked
+          else
+            cargo build --release -p oakvcs-cli --locked
+          fi
+
+      - name: upload cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ "$CRATES_PUBLISH" = true ] || { echo "Dry run OK: nothing uploaded."; exit 0; }
+          cargo publish -p oakvcs-cli --no-verify --locked
+          echo "Published oakvcs-core and oakvcs-cli $VERSION to crates.io."
