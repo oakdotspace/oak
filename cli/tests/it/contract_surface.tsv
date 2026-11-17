@@ -1,0 +1,126 @@
+# The oak command surface for the machine contract. One line per runnable command:
+# <command path> TAB <json|exempt> TAB <why an exempt command has no --json>.
+# Checked by `contract_surface_matches_the_golden_file` (cli/src/contract_tests.rs);
+# walked by cli/tests/it/contract_surface.rs. Hidden commands are marked `hidden`.
+access	json	
+agent publication forget	json	
+agent state	json	
+approve	json	
+auth status	json	
+branch	json	
+branch diff	json	
+branch list	json	
+branch rename	exempt	local-only rename with no receipt yet; `oak branch --json rename` is rejected and failures still get the envelope
+branch review	json	
+branch show	json	
+branch triage	json	
+cat	json	
+change capture	json	
+change export	json	
+clone	json	
+close	json	
+commit	json	
+completions	exempt	prints a shell completion script
+conflict show	json	
+conflict status	json	
+conflict take	json	
+desc	json	
+diff	json	
+doctor	json	
+doctor blob	json	
+doctor compact	exempt	manual storage maintenance with human progress output
+doctor file	json	
+doctor refs	json	
+doctor tree	json	
+environment	json	
+export	json	
+feedback	json	
+feedback link	json	
+feedback list	json	
+feedback show	json	
+feedback transition	json	
+feedback unlink	json	
+fetch	json	
+finish	json	
+grep	json	
+group add	json	
+group agent add	json	
+group agent list	json	
+group agent remove	json	
+group create	json	
+group grant	json	
+group invite	json	
+group list	json	
+group remove	json	
+group revoke	json	
+group show	json	
+group switch	json	
+groups	json	
+hash	exempt	prints one bare commit hash, already machine-readable
+init	json	
+log	json	
+login	exempt	interactive browser/device flow
+logout	exempt	interactive credential removal; no state an agent needs back
+ls	json	
+mark create	json	
+mark delete	json	
+mark follow	json	
+mark list	json	
+mark log	json	
+mark move	json	
+mark report	json-hidden	
+mark rollback	json	
+mark show	json	
+mcp	exempt	speaks the MCP protocol on stdio
+merge	json	
+open	json	
+owners	json	
+pull	json	
+push	json	
+repo adopt	json	
+repo list	json	
+repo move	json	
+repo visibility	json	
+report	json	
+reset	json	
+restore	json	
+retention	json	
+retention list	json	
+retention remove	json	
+retention set	json	
+root archive	json	
+root create	json	
+root list	json	
+root pull	json	
+root push	json	
+root show	json	
+site check	json	
+site create	json	
+site deploys	json	
+site domain add	json	
+site domain list	json	
+site domain primary	json	
+site domain rm	json	
+site domain verify	json	
+site list	json	
+site redeploy	json	
+site rename	json	
+site rm	json	
+site rollback	json	
+site set	json	
+site show	json	
+skill install	json	
+skill show	exempt	the output is the skill file itself, printed as-is
+skill status	json	
+sparse	json	
+sparse add	json	
+sparse disable	json	
+sparse list	json	
+sparse remove	json	
+sparse set	json	
+split	json	
+start	json	
+status	json	
+switch	json	
+upgrade	exempt	self-update with human progress output
+whoami	json	

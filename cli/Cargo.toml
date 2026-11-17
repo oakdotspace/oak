@@ -1,0 +1,104 @@
+# Published to crates.io as `oakvcs-cli` (installs the `oak` binary via
+# `cargo install oakvcs-cli`). The `oak-cli` name pattern is kept internal.
+[package]
+name = "oakvcs-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "The Oak CLI (`oak`): version control built for you and your agents."
+homepage = "https://oak.space"
+repository = "https://oak.space/oak/oak"
+readme = "README.md"
+keywords = ["vcs", "version-control", "cli", "git"]
+categories = ["development-tools", "command-line-utilities"]
+
+[[bin]]
+name = "oak"
+path = "src/main.rs"
+
+# Keep the library crate importable as `oak_cli` (main.rs and the integration
+# tests do `use oak_cli::...`) even though the package is named `oakvcs-cli`.
+[lib]
+name = "oak_cli"
+path = "src/lib.rs"
+
+[dependencies]
+# oak-core is the sibling workspace member at ../core (published to crates.io
+# as `oakvcs-core`, imported as `oak_core`). The package=version+path is defined
+# once in the workspace root's [workspace.dependencies] so the published version
+# lives in a single place; see there for why both version and path are set.
+# oak-core also carries the client storage layer (the former oak-storage):
+# Repository, SqliteRepository, BulkImporter, StatCacheEntry.
+oak-core = { workspace = true }
+# `color` (on top of the workspace's derive+env) lets clap colorize its
+# auto-generated `oak <cmd> --help`, matching the hand-rolled `oak --help`
+# banner. oak-cli is the only crate that depends on clap, so this stays
+# scoped here and doesn't pull anstream into the server/web builds.
+# `wrap_help` wraps help text to the terminal width (capped by
+# `max_term_width` on `Cli`) instead of letting long lines run on.
+clap = { workspace = true, features = ["color", "wrap_help"] }
+# Generates the shell-completion scripts emitted by `oak completions <shell>`.
+clap_complete = { workspace = true }
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+blake3 = "1.8"
+tokio.workspace = true
+reqwest.workspace = true
+# reqwest is on `rustls-no-provider`, so the CLI installs `ring` as the
+# process-default CryptoProvider at startup (main.rs). See the workspace
+# Cargo.toml for why we avoid the default aws-lc-rs backend.
+rustls.workspace = true
+futures-util.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dialoguer = { version = "0.12", features = ["fuzzy-select"] }
+# Verify-only minisign implementation (pure Rust, no libsodium). `oak upgrade`
+# uses it to check the signature on a downloaded release binary against the
+# public key baked into the CLI (RELEASE_PUBKEY in commands/upgrade.rs).
+minisign-verify = "0.3"
+urlencoding = "2"
+zip.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+indicatif.workspace = true
+open = "5"
+dirs = "7"
+tempfile.workspace = true
+uuid = { workspace = true }
+# Publication-state fingerprints.
+sha2 = "0.11"
+# sha2 0.11 digests no longer implement `LowerHex`; hex-encode them explicitly.
+hex = "0.4"
+# Read-only change export distinguishes pre-capture from inconsistent schemas;
+# integrity tests also construct storage states no public API can produce.
+# Same version + features oak-core already links, so this adds no second build.
+rusqlite = { version = "0.39", features = ["bundled", "fallible_uint"] }
+toml = { workspace = true }
+rayon = { workspace = true }
+# `oak log -G <regex>`: compiled once per invocation and matched against the
+# added/removed lines of each commit's diff.
+regex = { workspace = true }
+libc = "0.2"
+
+# Used by `oak clone <git-url>` to walk the cloned git history and replay it
+# as oak commits (also `oak init` inside a git checkout).
+gix = { workspace = true, features = ["max-performance"] }
+
+# Win32 bindings, Windows only: process liveness for the work-dir lock.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# HTTP-level tests (blob_fetch, push, ...) run the real reqwest client
+# against a wiremock server — no oak-server needed.
+wiremock = "0.6"
+# Blob-verification tests forge the compressed frames a skewed server ships.
+zstd = "0.14"

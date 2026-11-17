@@ -1,0 +1,8 @@
+# nextest settings for the cli/core workspace.
+#
+# A hung test must not hold a machine forever. The whole suite runs in under
+# a minute and its slowest tests take a few seconds, so anything still running
+# after five minutes is stuck: nextest reports it slow every minute and kills
+# it at five.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 5 }
